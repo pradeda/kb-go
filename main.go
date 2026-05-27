@@ -404,7 +404,7 @@ func cmdPending() {
 	if count == 0 {
 		fmt.Println("All entries compiled.")
 	} else {
-		fmt.Printf("\n%d entries pending compilation.\n", count)
+		fmt.Printf("\n%d entries pending compilation.\nRun: python3 /opt/kb/compile.py\n", count)
 	}
 }
 
