@@ -1,0 +1,13 @@
+[Unit]
+Description=KB compile watcher — auto pokreće compile.py na dodavanje beleški
+After=network.target
+
+[Service]
+Type=simple
+User=turok
+ExecStart=/opt/kb/watcher.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

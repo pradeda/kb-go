@@ -71,7 +71,17 @@ EOF
 kb add url "https://example.com" "Interesting article" "bookmarks"
 ```
 
-After adding entries, run `python3 /opt/kb/compile.py` to compile them into ChromaDB for semantic search.
+After adding entries, run `python3 /opt/kb/compile.py` to compile them into ChromaDB for semantic search — or install the auto-compile watcher.
+
+### Auto-compile watcher
+
+```bash
+sudo cp kb-watcher.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kb-watcher
+```
+
+Watches `/opt/kb/raw/` via inotify, debounces 5s, runs `compile.py` automatically. No manual step needed.
 
 ### Full-text search (`kb search`)
 
