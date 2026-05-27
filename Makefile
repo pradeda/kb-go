@@ -1,5 +1,5 @@
-BINARY   = kb-go
-INSTALL  = /usr/local/bin/kb-ask
+BINARY   = kb
+INSTALL  = /usr/local/bin/kb
 BUILD    = go build -tags fts5 -o $(BINARY) .
 
 build:

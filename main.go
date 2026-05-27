@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -19,9 +20,10 @@ import (
 
 const (
 	dbPath           = "/opt/kb/kb.db"
+	rawDir           = "/opt/kb/raw"
 	wikiIndex        = "/opt/kb/wiki/index.md"
 	openRouterURL    = "https://openrouter.ai/api/v1/chat/completions"
-	model            = "google/gemini-2.5-flash-lite"
+	defaultModel     = "google/gemini-2.5-flash-lite"
 	chromaBase       = "http://localhost:8000/api/v2/tenants/default_tenant/databases/default_database"
 	chromaCollection = "kb_collection"
 	embedSocket      = "/run/kb-embed/embed.sock"
@@ -43,15 +45,65 @@ type Result struct {
 }
 
 func main() {
-	start := time.Now()
 	loadEnv("/opt/kb/.env")
 
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: kb-ask 'your question'")
+		printUsage()
 		os.Exit(1)
 	}
 
-	query := strings.Join(os.Args[1:], " ")
+	switch os.Args[1] {
+	case "ask":
+		cmdAsk()
+	case "add":
+		cmdAdd()
+	case "list":
+		cmdList()
+	case "search":
+		cmdSearch()
+	case "pending":
+		cmdPending()
+	default:
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Println(`Usage: kb <command> [args...]
+
+Commands:
+  ask "question"                 Semantic search + LLM synthesis
+  add note "content" "title" "tags"   Add a note (tags comma-separated, optional)
+  add note - "title" "tags"           Add a note from stdin
+  add url "url" "title" "tags"        Add a URL bookmark
+  list [limit]                   List recent entries (default 20)
+  search "query" [limit]         Full-text search via FTS5 (default 20)
+  pending                        List entries not yet compiled
+
+Examples:
+  kb ask "how does NFS work in the homelab?"
+  kb add note "Docker tip" "Use restart: always" "docker,tips"
+  kb add note - "My Note" "tag1" <<'EOF'
+  ...long content...
+  EOF
+  kb add url "https://example.com" "Interesting article" "bookmarks"
+  kb list 10
+  kb search "docker"
+  kb pending`)
+}
+
+// ─── ask ──────────────────────────────────────────────────────────────────────
+
+func cmdAsk() {
+	start := time.Now()
+
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "Usage: kb ask \"question\"")
+		os.Exit(1)
+	}
+
+	query := strings.Join(os.Args[2:], " ")
 
 	results, err := searchSemantic(query, start)
 	strategy := "semantic"
@@ -106,6 +158,302 @@ Wiki index (for orientation only, not for direct answers):
 	fmt.Fprintf(os.Stderr, "[%v] Done.\n", time.Since(start).Round(time.Millisecond))
 }
 
+// ─── add ──────────────────────────────────────────────────────────────────────
+
+func cmdAdd() {
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "Usage: kb add <note|url> ...")
+		fmt.Fprintln(os.Stderr, "  kb add note \"content\" \"title\" \"tags\"")
+		fmt.Fprintln(os.Stderr, "  kb add note - \"title\" \"tags\"  (read content from stdin)")
+		fmt.Fprintln(os.Stderr, "  kb add url \"url\" \"title\" \"tags\"")
+		os.Exit(1)
+	}
+
+	entryType := os.Args[2]
+	if entryType != "note" && entryType != "url" {
+		fmt.Fprintf(os.Stderr, "Invalid type: %s (must be 'note' or 'url')\n", entryType)
+		os.Exit(1)
+	}
+
+	var content, title, tags string
+
+	if entryType == "note" && len(os.Args) > 3 && os.Args[3] == "-" {
+		// Read from stdin
+		if len(os.Args) >= 5 {
+			title = os.Args[4]
+		}
+		if len(os.Args) >= 6 {
+			tags = os.Args[5]
+		}
+		stdinBytes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading stdin: %v\n", err)
+			os.Exit(1)
+		}
+		content = string(stdinBytes)
+		if content == "" {
+			fmt.Fprintln(os.Stderr, "Error: no content provided on stdin")
+			os.Exit(1)
+		}
+	} else {
+		if len(os.Args) < 4 {
+			fmt.Fprintf(os.Stderr, "Error: content is required for %s\n", entryType)
+			os.Exit(1)
+		}
+		content = os.Args[3]
+		if len(os.Args) >= 5 {
+			title = os.Args[4]
+		}
+		if len(os.Args) >= 6 {
+			tags = os.Args[5]
+		}
+	}
+
+	if title == "" {
+		// Use first line of content as title (truncated)
+		title = firstLine(content, 80)
+	}
+
+	ts := time.Now().Format("2006-01-02T15:04:05")
+	dateStr := time.Now().Format("2006-01-02")
+	slug := slugify(title)
+	if slug == "" {
+		slug = slugify(content)
+	}
+
+	// Subdirectory per type
+	subdir := "notes"
+	if entryType == "url" {
+		subdir = "urls"
+	}
+
+	rawPath := fmt.Sprintf("%s/%s/%s-%s.md", rawDir, subdir, dateStr, slug)
+	if err := os.MkdirAll(fmt.Sprintf("%s/%s", rawDir, subdir), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Write raw markdown file with frontmatter
+	frontmatter := fmt.Sprintf(`---
+type: %s
+content: %s
+title: %s
+tags: %s
+saved: %s
+---
+
+%s
+`, entryType, content, title, tags, ts, content)
+	if err := os.WriteFile(rawPath, []byte(frontmatter), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Insert into SQLite
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	result, err := db.Exec(
+		`INSERT INTO entries (type, content, title, tags, raw_path, source, created_at)
+		 VALUES (?, ?, ?, ?, ?, 'cli', ?)`,
+		entryType, content, title, tags, rawPath, ts,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error inserting into database: %v\n", err)
+		os.Exit(1)
+	}
+
+	id, _ := result.LastInsertId()
+	fmt.Printf("OK [id=%d] %s\n", id, rawPath)
+}
+
+// ─── list ─────────────────────────────────────────────────────────────────────
+
+func cmdList() {
+	limit := 20
+	if len(os.Args) >= 3 {
+		if n, err := strconv.Atoi(os.Args[2]); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	rows, err := db.Query(
+		`SELECT id, type, title, created_at FROM entries
+		 ORDER BY created_at DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error querying database: %v\n", err)
+		os.Exit(1)
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-6s %-6s %-50s %s\n", "ID", "TYPE", "TITLE", "CREATED")
+	fmt.Println(strings.Repeat("-", 90))
+	for rows.Next() {
+		var id int64
+		var typ, title, created string
+		if err := rows.Scan(&id, &typ, &title, &created); err != nil {
+			continue
+		}
+		fmt.Printf("%-6d %-6s %-50s %s\n", id, typ, truncateASCII(title, 50), created)
+	}
+}
+
+// ─── search ───────────────────────────────────────────────────────────────────
+
+func cmdSearch() {
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "Usage: kb search \"query\" [limit]")
+		os.Exit(1)
+	}
+
+	query := os.Args[2]
+	limit := 20
+	if len(os.Args) >= 4 {
+		if n, err := strconv.Atoi(os.Args[3]); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	rows, err := db.Query(
+		`SELECT e.id, e.type, e.title, e.content, e.tags, e.created_at
+		 FROM entries e
+		 JOIN entries_fts fts ON e.id = fts.rowid
+		 WHERE entries_fts MATCH ?
+		 ORDER BY rank
+		 LIMIT ?`, query, limit,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error searching: %v\n", err)
+		os.Exit(1)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var id int64
+		var typ, title, content, tags, created string
+		if err := rows.Scan(&id, &typ, &title, &content, &tags, &created); err != nil {
+			continue
+		}
+		fmt.Printf("=== [%d] %s | %s | %s ===\n", id, typ, title, created)
+		if tags != "" {
+			fmt.Printf("Tags: %s\n", tags)
+		}
+		fmt.Println(truncate(content, 500))
+		fmt.Println()
+		count++
+	}
+
+	if count == 0 {
+		fmt.Println("No matches found.")
+	}
+}
+
+// ─── pending ──────────────────────────────────────────────────────────────────
+
+func cmdPending() {
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	rows, err := db.Query(
+		`SELECT id, type, title, raw_path FROM entries
+		 WHERE compiled_at IS NULL ORDER BY created_at`,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error querying database: %v\n", err)
+		os.Exit(1)
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-6s %-6s %-40s %s\n", "ID", "TYPE", "TITLE", "RAW_PATH")
+	fmt.Println(strings.Repeat("-", 100))
+	count := 0
+	for rows.Next() {
+		var id int64
+		var typ, title, rawPath string
+		if err := rows.Scan(&id, &typ, &title, &rawPath); err != nil {
+			continue
+		}
+		fmt.Printf("%-6d %-6s %-40s %s\n", id, typ, truncateASCII(title, 40), rawPath)
+		count++
+	}
+
+	if count == 0 {
+		fmt.Println("All entries compiled.")
+	} else {
+		fmt.Printf("\n%d entries pending compilation.\n", count)
+	}
+}
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+func slugify(s string) string {
+	s = strings.ToLower(s)
+	var result strings.Builder
+	lastDash := false
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+			lastDash = false
+		} else if !lastDash {
+			result.WriteRune('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(result.String(), "-")
+	if len(out) > 60 {
+		out = out[:60]
+	}
+	if out == "" {
+		out = "untitled"
+	}
+	return out
+}
+
+func firstLine(s string, maxLen int) string {
+	lines := strings.SplitN(strings.TrimSpace(s), "\n", 2)
+	out := strings.TrimSpace(lines[0])
+	if len(out) > maxLen {
+		out = out[:maxLen] + "..."
+	}
+	if out == "" {
+		out = "Untitled"
+	}
+	return out
+}
+
+func truncateASCII(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-3] + "..."
+}
+
+// ─── OpenRouter ───────────────────────────────────────────────────────────────
+
 func callOpenRouter(prompt string, start time.Time) error {
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
@@ -114,7 +462,7 @@ func callOpenRouter(prompt string, start time.Time) error {
 
 	modelToUse := os.Getenv("OPENROUTER_MODEL")
 	if modelToUse == "" {
-		modelToUse = model
+		modelToUse = defaultModel
 	}
 
 	fmt.Fprintf(os.Stderr, "[%v] Calling OpenRouter (%s)...\n",
@@ -160,7 +508,6 @@ func callOpenRouter(prompt string, start time.Time) error {
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	// Increased buffer from default 64KB to 1MB — prevents ErrTooLong on long responses
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
 	for scanner.Scan() {
@@ -182,6 +529,8 @@ func callOpenRouter(prompt string, start time.Time) error {
 	fmt.Println()
 	return scanner.Err()
 }
+
+// ─── semantic search ──────────────────────────────────────────────────────────
 
 func searchSemantic(query string, start time.Time) ([]Result, error) {
 	fmt.Fprintf(os.Stderr, "[%v] Semantic search — embedding query...\n",
@@ -302,7 +651,7 @@ func getEmbedding(text string) ([]float64, error) {
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	if _, err := fmt.Fprintf(conn, "%s\n", text); err != nil {
-		return nil, fmt.Errorf("slanje teksta: %v", err)
+		return nil, fmt.Errorf("sending text: %v", err)
 	}
 
 	scanner := bufio.NewScanner(conn)
