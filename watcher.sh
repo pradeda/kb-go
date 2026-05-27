@@ -1,16 +1,16 @@
 #!/bin/bash
-# kb-watcher: inotify na /opt/kb/raw/, auto-pokreće compile.py
+# kb-watcher: watches /opt/kb/raw/ via inotify, triggers compile.py automatically
 # Systemd: /etc/systemd/system/kb-watcher.service
 
 RAWDIR="/opt/kb/raw"
 COMPILE="/usr/bin/python3 /opt/kb/compile.py"
 LOCK="/tmp/kb-watcher.lock"
 LAST_FILE="/tmp/kb-watcher-last"
-MIN_INTERVAL=5  # sekundi između kompajliranja
+MIN_INTERVAL=5  # seconds between compilations
 
 inotifywait -m -r -e close_write -e moved_to --format "%w%f" "$RAWDIR" 2>/dev/null |
 while read -r filepath; do
-    # Samo .md fajlovi
+    # Only .md files
     [[ "$filepath" != *.md ]] && continue
 
     now=$(date +%s)
@@ -21,7 +21,7 @@ while read -r filepath; do
         sleep $(( MIN_INTERVAL - elapsed ))
     fi
 
-    # Lock da ne bi dva compile-a išla paralelno
+    # Lock prevents parallel compile.py runs
     (
         flock -n 200 || exit 0
         date +%s > "$LAST_FILE"
