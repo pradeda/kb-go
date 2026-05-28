@@ -28,6 +28,7 @@ kb pending
 ## Requirements
 
 - Go 1.24+
+- Python 3.10+ (compile.py)
 - SQLite with FTS5 support (`go build -tags fts5`)
 - External services:
   - FastEmbed daemon at `/run/kb-embed/embed.sock`
@@ -38,7 +39,7 @@ kb pending
 
 ```bash
 make build    # builds kb binary
-make install  # builds + installs to /usr/local/bin/kb
+make install  # builds + installs kb to /usr/local/bin/ and compile.py to /opt/kb/
 ```
 
 Manual:
@@ -46,6 +47,7 @@ Manual:
 ```bash
 go build -tags fts5 -o kb .
 sudo cp kb /usr/local/bin/kb
+sudo cp compile.py /opt/kb/compile.py
 ```
 
 ## Usage
