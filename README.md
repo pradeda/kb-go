@@ -85,7 +85,9 @@ EOF
 kb add url "https://example.com" "Interesting article" "bookmarks"
 ```
 
-After adding entries, run `python3 /opt/kb/compile.py` to compile them into ChromaDB for semantic search — or install the auto-compile watcher.
+After adding entries, `compile.py` embeds them into ChromaDB for semantic search via the auto-compile watcher.
+
+`compile.py` previously also generated wiki pages via OpenRouter LLM synthesis — that step is currently **disabled** (commented out in `main()`) pending future wiki reactivation. Only ChromaDB embedding runs by default.
 
 ### Auto-compile watcher
 
