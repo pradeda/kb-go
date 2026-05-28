@@ -36,12 +36,14 @@ var (
 )
 
 type Result struct {
+	ID      int64
 	Title   string
 	Content string
 	Summary string
 	Tags    string
 	Source  string
 	Date    string
+	Score   float64
 }
 
 func main() {
@@ -452,6 +454,90 @@ func truncateASCII(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
+// ─── decay ranking ────────────────────────────────────────────────────────────
+
+var dateFormats = []string{
+	"2006-01-02T15:04:05",
+	"2006-01-02",
+	time.RFC3339,
+}
+
+const decayHalfLife = 180.0 // days
+const minScoreThreshold = 0.15
+const fallbackTopN = 3
+
+func parseDate(s string) (time.Time, error) {
+	for _, f := range dateFormats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognized date format: %s", s)
+}
+
+func decayFactor(dateStr string) float64 {
+	t, err := parseDate(dateStr)
+	if err != nil {
+		return 1.0 // unknown date: no penalty
+	}
+	daysOld := time.Since(t).Hours() / 24.0
+	if daysOld < 0 {
+		daysOld = 0
+	}
+	return 1.0 / (1.0 + daysOld/decayHalfLife)
+}
+
+func applyDecay(results []Result, idDist map[int64]float64) []Result {
+	for i := range results {
+		dist, ok := idDist[results[i].ID]
+		if !ok {
+			results[i].Score = 0
+			continue
+		}
+		similarity := 1.0 - dist
+		decay := decayFactor(results[i].Date)
+		results[i].Score = similarity * decay
+
+		daysOld := float64(0)
+		if t, err := parseDate(results[i].Date); err == nil {
+			daysOld = time.Since(t).Hours() / 24.0
+		}
+		fmt.Fprintf(os.Stderr, "[decay] id=%d dist=%.3f age=%.0fd decay=%.2f score=%.2f\n",
+			results[i].ID, dist, daysOld, decay, results[i].Score)
+	}
+
+	// Sort descending by Score
+	sortResults(results)
+
+	// Filter below threshold; fallback to top N if all filtered out
+	var filtered []Result
+	for _, r := range results {
+		if r.Score >= minScoreThreshold {
+			filtered = append(filtered, r)
+		}
+	}
+	if len(filtered) == 0 && len(results) > 0 {
+		n := fallbackTopN
+		if n > len(results) {
+			n = len(results)
+		}
+		filtered = results[:n]
+		fmt.Fprintf(os.Stderr, "[decay] all results below threshold %.2f, using top %d fallback\n",
+			minScoreThreshold, n)
+	}
+	return filtered
+}
+
+func sortResults(results []Result) {
+	for i := 0; i < len(results); i++ {
+		for j := i + 1; j < len(results); j++ {
+			if results[j].Score > results[i].Score {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
+}
+
 // ─── OpenRouter ───────────────────────────────────────────────────────────────
 
 func callOpenRouter(prompt string, start time.Time) error {
@@ -586,6 +672,7 @@ func searchSemantic(query string, start time.Time) ([]Result, error) {
 	}
 
 	var sqliteIDs []string
+	idDist := make(map[int64]float64)
 	for i, dist := range chromaResp.Distances[0] {
 		if dist > maxChromaDist {
 			continue
@@ -605,7 +692,28 @@ func searchSemantic(query string, start time.Time) ([]Result, error) {
 		return nil, nil
 	}
 
-	return fetchByIDs(sqliteIDs)
+	results, err := fetchByIDs(sqliteIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build id → distance map for decay ranking
+	for i, dist := range chromaResp.Distances[0] {
+		if dist > maxChromaDist {
+			continue
+		}
+		idStr := chromaResp.IDs[0][i]
+		if strings.HasPrefix(idStr, "gemini_") {
+			continue
+		}
+		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+			idDist[id] = dist
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "[%v] Applying time decay...\n",
+		time.Since(start).Round(time.Millisecond))
+	return applyDecay(results, idDist), nil
 }
 
 func fetchByIDs(ids []string) ([]Result, error) {
@@ -624,7 +732,7 @@ func fetchByIDs(ids []string) ([]Result, error) {
 	}
 
 	rows, err := db.Query(fmt.Sprintf(`
-		SELECT title, content, summary, tags, type, created_at
+		SELECT id, title, content, summary, tags, type, created_at
 		FROM entries WHERE id IN (%s)`, placeholders), args...)
 	if err != nil {
 		return nil, err
@@ -634,7 +742,7 @@ func fetchByIDs(ids []string) ([]Result, error) {
 	var results []Result
 	for rows.Next() {
 		var r Result
-		if err := rows.Scan(&r.Title, &r.Content, &r.Summary, &r.Tags, &r.Source, &r.Date); err != nil {
+		if err := rows.Scan(&r.ID, &r.Title, &r.Content, &r.Summary, &r.Tags, &r.Source, &r.Date); err != nil {
 			continue
 		}
 		results = append(results, r)
