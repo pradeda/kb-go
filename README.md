@@ -15,12 +15,14 @@ kb ask "question"
 kb add note "content" "title" "tags"
   ├── Write raw markdown file (frontmatter + body)
   └── Insert into SQLite entries table (FTS5 auto-indexed via triggers)
+       │
+       └── kb-watcher (inotify, 5s debounce) → compile.py → ChromaDB
 
 kb search "query"
   └── SQLite FTS5 full-text search (entries_fts)
 
-kb pending → compile.py
-  └── Shows entries not yet compiled → run compile.py to embed in ChromaDB
+kb pending
+  └── Shows entries not yet embedded in ChromaDB (embedded_at IS NULL)
 ```
 
 ## Requirements
@@ -85,9 +87,15 @@ EOF
 kb add url "https://example.com" "Interesting article" "bookmarks"
 ```
 
-After adding entries, `compile.py` embeds them into ChromaDB for semantic search via the auto-compile watcher.
+After adding entries, the `kb-watcher` systemd service automatically runs `/opt/kb/compile.py`, which embeds them into ChromaDB for semantic search. No manual step needed.
 
 `compile.py` previously also generated wiki pages via OpenRouter LLM synthesis — that step is currently **disabled** (commented out in `main()`) pending future wiki reactivation. Only ChromaDB embedding runs by default.
+
+Recovery flags (for disaster scenarios):
+```bash
+python3 /opt/kb/compile.py --recover-db    # raw .md → rebuild SQLite
+python3 /opt/kb/compile.py --recover-raw   # SQLite → regenerate raw .md
+```
 
 ### Auto-compile watcher
 
@@ -115,10 +123,10 @@ kb list           # last 20 entries
 kb list 50        # last 50 entries
 ```
 
-### Pending compilation (`kb pending`)
+### Pending embedding (`kb pending`)
 
 ```bash
-kb pending        # entries not yet compiled
+kb pending        # entries not yet embedded in ChromaDB
 ```
 
 ## Config
