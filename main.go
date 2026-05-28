@@ -501,6 +501,9 @@ func applyDecay(results []Result, idDist map[int64]float64) []Result {
 		daysOld := float64(0)
 		if t, err := parseDate(results[i].Date); err == nil {
 			daysOld = time.Since(t).Hours() / 24.0
+			if daysOld < 0 {
+				daysOld = 0
+			}
 		}
 		fmt.Fprintf(os.Stderr, "[decay] id=%d dist=%.3f age=%.0fd decay=%.2f score=%.2f\n",
 			results[i].ID, dist, daysOld, decay, results[i].Score)
@@ -677,13 +680,16 @@ func searchSemantic(query string, start time.Time) ([]Result, error) {
 		if dist > maxChromaDist {
 			continue
 		}
-		id := chromaResp.IDs[0][i]
-		if strings.HasPrefix(id, "gemini_") {
+		idStr := chromaResp.IDs[0][i]
+		if strings.HasPrefix(idStr, "gemini_") {
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "[%v] ChromaDB hit: id=%s distance=%.3f\n",
-			time.Since(start).Round(time.Millisecond), id, dist)
-		sqliteIDs = append(sqliteIDs, id)
+			time.Since(start).Round(time.Millisecond), idStr, dist)
+		sqliteIDs = append(sqliteIDs, idStr)
+		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+			idDist[id] = dist
+		}
 	}
 
 	if len(sqliteIDs) == 0 {
@@ -695,20 +701,6 @@ func searchSemantic(query string, start time.Time) ([]Result, error) {
 	results, err := fetchByIDs(sqliteIDs)
 	if err != nil {
 		return nil, err
-	}
-
-	// Build id → distance map for decay ranking
-	for i, dist := range chromaResp.Distances[0] {
-		if dist > maxChromaDist {
-			continue
-		}
-		idStr := chromaResp.IDs[0][i]
-		if strings.HasPrefix(idStr, "gemini_") {
-			continue
-		}
-		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-			idDist[id] = dist
-		}
 	}
 
 	fmt.Fprintf(os.Stderr, "[%v] Applying time decay...\n",
