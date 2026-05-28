@@ -9,6 +9,7 @@ kb ask "question"
   ├── FastEmbed daemon (Unix socket, ~50ms) — embed query
   ├── ChromaDB (cosine distance ≤ 0.40) — top 10 semantic matches
   ├── SQLite (FTS5) — fetch full content by IDs
+  ├── Time decay ranking — deprioritize stale entries (half-life: 180 days)
   └── OpenRouter LLM — synthesize answer from chunks
 
 kb add note "content" "title" "tags"
@@ -54,6 +55,19 @@ kb ask "how does NFS work in the homelab?"
 ```
 
 Requires: OpenRouter API key in `/opt/kb/.env`
+
+Results are ranked by a combined score:
+
+```
+score = (1.0 - cosine_distance) × decay_factor
+decay_factor = 1 / (1 + age_in_days / 180)
+```
+
+- **Half-life**: 180 days — a 6-month-old entry retains 50% weight
+- **Threshold**: entries scoring below 0.15 are filtered out
+- **Fallback**: if every result falls below threshold, top 3 are kept regardless
+- **Date parsing**: supports `2006-01-02T15:04:05`, `2006-01-02`, and RFC3339 formats
+- **Debug output** shows per-entry decay on stderr: `[decay] id=183 dist=0.27 age=10d decay=0.95 score=0.69`
 
 ### Add entries (`kb add`)
 
