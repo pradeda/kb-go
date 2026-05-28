@@ -239,14 +239,13 @@ func cmdAdd() {
 	// Write raw markdown file with frontmatter
 	frontmatter := fmt.Sprintf(`---
 type: %s
-content: %s
 title: %s
 tags: %s
 saved: %s
 ---
 
 %s
-`, entryType, content, title, tags, ts, content)
+`, entryType, title, tags, ts, content)
 	if err := os.WriteFile(rawPath, []byte(frontmatter), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
 		os.Exit(1)
