@@ -390,7 +390,7 @@ func cmdPending() {
 
 	rows, err := db.Query(
 		`SELECT id, type, title, raw_path FROM entries
-		 WHERE compiled_at IS NULL ORDER BY created_at`,
+		 WHERE embedded_at IS NULL ORDER BY created_at`,
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error querying database: %v\n", err)
@@ -415,9 +415,9 @@ func cmdPending() {
 	}
 
 	if count == 0 {
-		fmt.Println("All entries compiled.")
+		fmt.Println("All entries embedded.")
 	} else {
-		fmt.Printf("\n%d entries pending compilation.\nRun: python3 /opt/kb/compile.py\n", count)
+		fmt.Printf("\n%d entries pending embedding.\nRun: python3 /opt/kb/compile.py\n", count)
 	}
 }
 
