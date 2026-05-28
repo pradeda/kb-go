@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -266,6 +267,7 @@ saved: %s
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error inserting into database: %v\n", err)
+		os.Remove(rawPath)
 		os.Exit(1)
 	}
 
@@ -309,6 +311,9 @@ func cmdList() {
 			continue
 		}
 		fmt.Printf("%-6d %-6s %-50s %s\n", id, typ, truncateASCII(title, 50), created)
+	}
+	if err := rows.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error iterating rows: %v\n", err)
 	}
 }
 
@@ -364,6 +369,9 @@ func cmdSearch() {
 		fmt.Println()
 		count++
 	}
+	if err := rows.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error iterating rows: %v\n", err)
+	}
 
 	if count == 0 {
 		fmt.Println("No matches found.")
@@ -401,6 +409,9 @@ func cmdPending() {
 		}
 		fmt.Printf("%-6d %-6s %-40s %s\n", id, typ, truncateASCII(title, 40), rawPath)
 		count++
+	}
+	if err := rows.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error iterating rows: %v\n", err)
 	}
 
 	if count == 0 {
@@ -475,18 +486,6 @@ func parseDate(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unrecognized date format: %s", s)
 }
 
-func decayFactor(dateStr string) float64 {
-	t, err := parseDate(dateStr)
-	if err != nil {
-		return 1.0 // unknown date: no penalty
-	}
-	daysOld := time.Since(t).Hours() / 24.0
-	if daysOld < 0 {
-		daysOld = 0
-	}
-	return 1.0 / (1.0 + daysOld/decayHalfLife)
-}
-
 func applyDecay(results []Result, idDist map[int64]float64) []Result {
 	for i := range results {
 		dist, ok := idDist[results[i].ID]
@@ -495,22 +494,23 @@ func applyDecay(results []Result, idDist map[int64]float64) []Result {
 			continue
 		}
 		similarity := 1.0 - dist
-		decay := decayFactor(results[i].Date)
-		results[i].Score = similarity * decay
-
 		daysOld := float64(0)
+		decay := 1.0
 		if t, err := parseDate(results[i].Date); err == nil {
 			daysOld = time.Since(t).Hours() / 24.0
 			if daysOld < 0 {
 				daysOld = 0
 			}
+			decay = 1.0 / (1.0 + daysOld/decayHalfLife)
 		}
+		results[i].Score = similarity * decay
 		fmt.Fprintf(os.Stderr, "[decay] id=%d dist=%.3f age=%.0fd decay=%.2f score=%.2f\n",
 			results[i].ID, dist, daysOld, decay, results[i].Score)
 	}
 
-	// Sort descending by Score
-	sortResults(results)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
 
 	// Filter below threshold; fallback to top N if all filtered out
 	var filtered []Result
@@ -529,16 +529,6 @@ func applyDecay(results []Result, idDist map[int64]float64) []Result {
 			minScoreThreshold, n)
 	}
 	return filtered
-}
-
-func sortResults(results []Result) {
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].Score > results[i].Score {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
 }
 
 // ─── OpenRouter ───────────────────────────────────────────────────────────────
@@ -738,6 +728,9 @@ func fetchByIDs(ids []string) ([]Result, error) {
 			continue
 		}
 		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return results, nil
 }
