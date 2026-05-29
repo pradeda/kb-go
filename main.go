@@ -472,7 +472,7 @@ var dateFormats = []string{
 	time.RFC3339,
 }
 
-const decayHalfLife = 180.0 // days
+const decayHalfLife = 540.0 // days (~1.5yr) — conservative for homelab technical docs
 const minScoreThreshold = 0.15
 const fallbackTopN = 3
 
