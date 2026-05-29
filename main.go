@@ -29,6 +29,7 @@ const (
 	chromaCollection = "kb_collection"
 	embedSocket      = "/run/kb-embed/embed.sock"
 	maxChromaDist    = 0.40
+	kbSearchAPI      = "http://192.168.1.174:8050/kb/search"
 )
 
 var (
@@ -108,17 +109,20 @@ func cmdAsk() {
 
 	query := strings.Join(os.Args[2:], " ")
 
-	results, err := searchSemantic(query, start)
-	strategy := "semantic"
+	results, err := searchViaAPI(query, start)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%v] Semantic error: %v\n",
+		fmt.Fprintf(os.Stderr, "[%v] KB Search API error: %v\n",
 			time.Since(start).Round(time.Millisecond), err)
+		fmt.Fprintf(os.Stderr, "[%v] Search unavailable — cannot answer.\n",
+			time.Since(start).Round(time.Millisecond))
+		os.Exit(1)
 	}
+
 	if len(results) == 0 {
-		fmt.Fprintf(os.Stderr, "[%v] No relevant results in KB\n",
+		fmt.Fprintf(os.Stderr, "[%v] KB Search API returned 0 results.\n",
 			time.Since(start).Round(time.Millisecond))
 	} else {
-		fmt.Fprintf(os.Stderr, "[%v] Semantic search — %d results\n",
+		fmt.Fprintf(os.Stderr, "[%v] KB Search API — %d results after rerank\n",
 			time.Since(start).Round(time.Millisecond), len(results))
 	}
 
@@ -135,11 +139,12 @@ RULES:
 - Answer in detail and with specifics, using all relevant information from the context below.
 - Cite source titles when possible.
 - If the information is not present in the KB, explicitly say so — do not fabricate.
+- If the context below is empty or says "No relevant results", respond with: "I couldn't find relevant information in the knowledge base for this query."
 - Do not shorten the answer — the user wants as much detail as possible from the KB.
 - Keep technical terms, project names, commands, and URLs in their original form — do not translate them.
 
 ---
-RELEVANT KB RESULTS (strategy: %s):
+RELEVANT KB RESULTS (strategy: api-rerank):
 %s
 
 ---
@@ -147,7 +152,7 @@ QUESTION: %s
 
 ---
 Wiki index (for orientation only, not for direct answers):
-%s`, strategy, context, query, string(indexData))
+%s`, context, query, string(indexData))
 
 	if err := callOpenRouter(prompt, start); err != nil {
 		fmt.Fprintf(os.Stderr, "[%v] OpenRouter did not respond: %v\n",
@@ -608,7 +613,95 @@ func callOpenRouter(prompt string, start time.Time) error {
 	return scanner.Err()
 }
 
-// ─── semantic search ──────────────────────────────────────────────────────────
+// ─── KB Search API client (replaces direct ChromaDB/embedding from Go) ────────
+
+// searchViaAPI calls the KB Search API with retry, returns ranked results or error.
+func searchViaAPI(query string, start time.Time) ([]Result, error) {
+	fmt.Fprintf(os.Stderr, "[%v] Calling KB Search API...\n",
+		time.Since(start).Round(time.Millisecond))
+
+	body, err := json.Marshal(map[string]string{
+		"query":  query,
+		"format": "full",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("json marshal: %v", err)
+	}
+
+	// Retry with backoff: 500ms, 1s, 2s
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
+			fmt.Fprintf(os.Stderr, "[%v] Retry %d/3 (backoff %v)...\n",
+				time.Since(start).Round(time.Millisecond), attempt+1, backoff)
+			time.Sleep(backoff)
+		}
+
+		req, err := http.NewRequest("POST", kbSearchAPI, bytes.NewReader(body))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := httpQuick.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("API error %d: %s", resp.StatusCode, string(b))
+			continue
+		}
+
+		var apiResp struct {
+			Results []struct {
+				ID          int     `json:"id"`
+				Title       string  `json:"title"`
+				Content     string  `json:"content"`
+				Summary     string  `json:"summary"`
+				Tags        string  `json:"tags"`
+				Source      string  `json:"source"`
+				Date        string  `json:"date"`
+				Distance    float64 `json:"distance"`
+				Relevance   float64 `json:"relevance"`
+				FinalScore  float64 `json:"final_score"`
+			} `json:"results"`
+			Query string `json:"query"`
+			Count int    `json:"count"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+			resp.Body.Close()
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+
+		var results []Result
+		for _, r := range apiResp.Results {
+			results = append(results, Result{
+				ID:      int64(r.ID),
+				Title:   r.Title,
+				Content: r.Content,
+				Summary: r.Summary,
+				Tags:    r.Tags,
+				Source:  r.Source,
+				Date:    r.Date,
+				Score:   r.FinalScore,
+			})
+		}
+		fmt.Fprintf(os.Stderr, "[%v] KB Search API returned %d results\n",
+			time.Since(start).Round(time.Millisecond), len(results))
+		return results, nil
+	}
+	return nil, fmt.Errorf("KB Search API unavailable after 3 attempts: %v", lastErr)
+}
+
+// ─── semantic search (LEGACY — kept for reference, no longer called by cmdAsk) ──
 
 func searchSemantic(query string, start time.Time) ([]Result, error) {
 	fmt.Fprintf(os.Stderr, "[%v] Semantic search — embedding query...\n",
@@ -786,7 +879,7 @@ func getChromaCollectionID() (string, error) {
 
 func formatResults(results []Result) string {
 	if len(results) == 0 {
-		return "(No direct hits)"
+		return "(No relevant KB results found for this query.)"
 	}
 	var sb strings.Builder
 	for _, r := range results {
