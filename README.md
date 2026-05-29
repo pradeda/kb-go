@@ -1,16 +1,20 @@
 # kb
 
-Homelab knowledge base CLI — semantic search, note management, and full-text search backed by ChromaDB, SQLite (FTS5), and FastEmbed.
+Homelab knowledge base CLI — semantic search, note management, and full-text search backed by KB Search API, ChromaDB, SQLite (FTS5), and FastEmbed.
 
 ## Architecture
 
 ```
 kb ask "question"
-  ├── FastEmbed daemon (Unix socket, ~50ms) — embed query
-  ├── ChromaDB (cosine distance ≤ 0.40) — top 10 semantic matches
-  ├── SQLite (FTS5) — fetch full content by IDs
-  ├── Time decay ranking — deprioritize stale entries (half-life: 180 days)
-  └── OpenRouter LLM — synthesize answer from chunks
+  ├── POST /kb/search (KB Search API, :8050)
+  │     ├── FastEmbed daemon (Unix socket, ~50ms) — embed query
+  │     ├── ChromaDB (cosine distance ≤ 0.40) — top 25 candidates (broad recall)
+  │     ├── SQLite — fetch full content + metadata by IDs
+  │     ├── Cross-encoder (ms-marco-MiniLM-L-6-v2, CPU) — rerank with sigmoid relevance
+  │     ├── Dedup — keep best chunk per entry
+  │     ├── Time decay — final = relevance × max(1/(1+days/540), 0.3)
+  │     └── Threshold 0.5 + cap top 5
+  └── OpenRouter LLM — synthesize answer from enriched chunks
 
 kb add note "content" "title" "tags"
   ├── Write raw markdown file (frontmatter + body)
@@ -25,12 +29,23 @@ kb pending
   └── Shows entries not yet embedded in ChromaDB (embedded_at IS NULL)
 ```
 
+### Ranking pipeline (implemented in `kb_search_api.py`)
+
+```
+Layer 1: ChromaDB cosine → top 25 (broad recall)
+Layer 2: Cross-encoder rerank → sigmoid → [0,1] relevance + dedup
+Layer 3: Time decay → final = relevance × max(1/(1+days/540), 0.3)
+Layer 4: Threshold 0.5 → cap top 5 (full) / top 3 (websearch)
+         No fallback — empty response is an honest signal.
+```
+
 ## Requirements
 
 - Go 1.24+
-- Python 3.10+ (compile.py)
+- Python 3.10+ with `sentence-transformers` (cross-encoder model)
 - SQLite with FTS5 support (`go build -tags fts5`)
 - External services:
+  - KB Search API at `http://192.168.1.174:8050` (systemd: `kb-search-api`)
   - FastEmbed daemon at `/run/kb-embed/embed.sock`
   - ChromaDB at `localhost:8000`
   - SQLite DB at `/opt/kb/kb.db`
@@ -58,20 +73,20 @@ sudo cp compile.py /opt/kb/compile.py
 kb ask "how does NFS work in the homelab?"
 ```
 
-Requires: OpenRouter API key in `/opt/kb/.env`
+Requires: OpenRouter API key in `/opt/kb/.env`, KB Search API running on `:8050`.
 
-Results are ranked by a combined score:
+Results are ranked by a 4-layer pipeline (see Architecture above). The final score combines cross-encoder relevance with time decay:
 
 ```
-score = (1.0 - cosine_distance) × decay_factor
-decay_factor = 1 / (1 + age_in_days / 180)
+final = sigmoid(cross_encoder(query, chunk)) × max(1/(1 + days_old/540), 0.3)
 ```
 
-- **Half-life**: 180 days — a 6-month-old entry retains 50% weight
-- **Threshold**: entries scoring below 0.15 are filtered out
-- **Fallback**: if every result falls below threshold, top 3 are kept regardless
-- **Date parsing**: supports `2006-01-02T15:04:05`, `2006-01-02`, and RFC3339 formats
-- **Debug output** shows per-entry decay on stderr: `[decay] id=183 dist=0.27 age=10d decay=0.95 score=0.69`
+- **Cross-encoder**: `ms-marco-MiniLM-L-6-v2`, ~80MB, runs on CPU (~200-400ms for 25 candidates)
+- **Half-life**: 540 days (~1.5yr) — conservative for homelab technical docs
+- **Decay floor**: 0.3 — entry never drops below 30% weight
+- **Threshold**: 0.5 — results below this are discarded (no fallback)
+- **Cap**: top 5 results passed to LLM
+- **Empty response**: LLM told "no relevant results" — does NOT fabricate
 
 ### Add entries (`kb add`)
 
@@ -138,3 +153,13 @@ kb pending        # entries not yet embedded in ChromaDB
 OPENROUTER_API_KEY=sk-or-v1-...
 OPENROUTER_MODEL=google/gemini-2.5-flash-lite
 ```
+
+## Related services
+
+| Service | Path | Port/Unit |
+|---------|------|-----------|
+| KB Search API | `/opt/kb/kb_search_api.py` | `:8050` (systemd: `kb-search-api`) |
+| MCP server | `/opt/kb/mcp_server.py` | registered in Claude Code |
+| kb-watcher | `/opt/kb/watcher.sh` | systemd: `kb-watcher` |
+| FastEmbed daemon | `/opt/kb/embed_daemon.py` | systemd: `kb-embed` |
+| ChromaDB | Docker: `kb-chromadb` | `:8000` |
