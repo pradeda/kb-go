@@ -249,7 +249,7 @@ func cmdAdd(ctx context.Context) {
 		subdir = "urls"
 	}
 
-	// UnixMilli u filename sprečava koliziju pri istom naslovu istog dana
+	// UnixMilli suffix prevents filename collision when the same title is added twice on the same day
 	rawPath := fmt.Sprintf("%s/%s/%s-%s-%d.md", rawDir, subdir, dateStr, slug, time.Now().UnixMilli())
 	if err := os.MkdirAll(fmt.Sprintf("%s/%s", rawDir, subdir), 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating directory: %v\n", err)
@@ -457,7 +457,7 @@ func cmdPending(ctx context.Context) {
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-// slugify transliterira srpsku latinicu i ćirilicu u ASCII i pravi URL-safe slug.
+// slugify transliterates Serbian Latin and Cyrillic characters to ASCII and produces a URL-safe slug.
 func slugify(s string) string {
 	s = transliterateSerbian(strings.ToLower(s))
 	var result strings.Builder
@@ -467,7 +467,7 @@ func slugify(s string) string {
 			result.WriteRune(r)
 			lastDash = false
 		} else if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			// Neprepoznati unicode slova — zameni crticom (ne gubi poziciju)
+			// Unrecognized unicode letter — replace with dash to preserve word boundary
 			if !lastDash {
 				result.WriteRune('-')
 				lastDash = true
@@ -490,7 +490,7 @@ func slugify(s string) string {
 	return out
 }
 
-// transliterateSerbian mapira srpska latinica+ćirilica slova u ASCII ekvivalente.
+// transliterateSerbian maps Serbian Latin and Cyrillic characters to their ASCII equivalents.
 func transliterateSerbian(s string) string {
 	var sb strings.Builder
 	sb.Grow(len(s))
@@ -505,13 +505,13 @@ func transliterateSerbian(s string) string {
 }
 
 var serbianMap = map[rune]string{
-	// Latinica dijakritika (velika → veliko ASCII, mala → malo ASCII)
+	// Latin diacritics (uppercase → uppercase ASCII, lowercase → lowercase ASCII)
 	'š': "s", 'Š': "S",
 	'č': "c", 'Č': "C",
 	'ć': "c", 'Ć': "C",
 	'ž': "z", 'Ž': "Z",
 	'đ': "dj", 'Đ': "Dj",
-	// Ćirilica (srpska)
+	// Cyrillic (Serbian)
 	'а': "a", 'А': "a", 'б': "b", 'Б': "b", 'в': "v", 'В': "v",
 	'г': "g", 'Г': "g", 'д': "d", 'Д': "d", 'ђ': "dj", 'Ђ': "dj",
 	'е': "e", 'Е': "e", 'ж': "z", 'Ж': "z", 'з': "z", 'З': "z",
@@ -537,7 +537,7 @@ func firstLine(s string, maxLen int) string {
 	return out
 }
 
-// truncate je rune-safe skraćivanje (zamenjuje bivši truncateASCII).
+// truncate is a rune-safe string shortener (replaces the former truncateASCII).
 func truncate(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
 		return s
@@ -549,7 +549,7 @@ func truncate(s string, n int) string {
 	return string(runes[:n-3]) + "..."
 }
 
-// yamlQuote vraća YAML-safe reprezentaciju stringa.
+// yamlQuote returns a YAML-safe representation of a string.
 func yamlQuote(s string) string {
 	if s == "" {
 		return `""`
@@ -586,8 +586,8 @@ func isNumericLike(s string) bool {
 	return true
 }
 
-// parseFTSQuery escape-uje FTS5 upit: ako sadrži specijalne karaktere,
-// tretira ga kao frazu (sa escape-ovanim dvostrukim navodnicima).
+// parseFTSQuery escapes an FTS5 query: if it contains special characters,
+// treats it as a phrase (with escaped double quotes).
 func parseFTSQuery(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -600,7 +600,7 @@ func parseFTSQuery(s string) string {
 	return s
 }
 
-// openDB otvara SQLite sa WAL-om i busy_timeout-om (sprečava "database is locked").
+// openDB opens SQLite with WAL and busy_timeout (prevents "database is locked" errors).
 func openDB() (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", sqliteDSN)
 	if err != nil {
@@ -684,8 +684,8 @@ func callOpenRouter(ctx context.Context, prompt string, start time.Time) error {
 	return fmt.Errorf("OpenRouter rate limited after retry")
 }
 
-// streamCompletion ispisuje SSE tok iz OpenRouter-a. Chunk je deklarisan unutar
-// petlje da bi se izbegao reuse bug (prethodna vrednost content bi se ponovila).
+// streamCompletion prints the SSE stream from OpenRouter. Chunk is declared inside
+// the loop to avoid the reuse bug (previous content value would repeat on empty delta).
 func streamCompletion(ctx context.Context, body io.Reader, start time.Time) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -722,7 +722,7 @@ func streamCompletion(ctx context.Context, body io.Reader, start time.Time) erro
 
 // ─── KB Search API client ─────────────────────────────────────────────────────
 
-// searchViaAPI zove KB Search API sa retry-jem. 4xx greške se ne retry-uju.
+// searchViaAPI calls the KB Search API with retry. 4xx errors are non-retryable.
 func searchViaAPI(ctx context.Context, query string, start time.Time) ([]Result, error) {
 	fmt.Fprintf(os.Stderr, "[%v] Calling KB Search API...\n",
 		time.Since(start).Round(time.Millisecond))
@@ -856,7 +856,7 @@ func loadEnv(path string) {
 		if !ok {
 			continue
 		}
-		// Postojeći env ima prednost — ne override-uj.
+		// Existing env takes precedence — do not override.
 		if _, exists := os.LookupEnv(key); exists {
 			continue
 		}
@@ -864,9 +864,9 @@ func loadEnv(path string) {
 	}
 }
 
-// parseEnvLine parsira jednu liniju .env fajla. Vraća (key, val, ok).
-// Podržava: KEY=value, KEY="value", KEY='value', export KEY=value.
-// Preskače: prazne linije, komentare (#), linije bez =.
+// parseEnvLine parses a single .env file line. Returns (key, val, ok).
+// Supports: KEY=value, KEY="value", KEY='value', export KEY=value.
+// Skips: empty lines, comments (#), lines without =.
 func parseEnvLine(line string) (key, val string, ok bool) {
 	line = strings.TrimSpace(line)
 	if line == "" || strings.HasPrefix(line, "#") {
