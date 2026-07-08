@@ -13,13 +13,13 @@ func TestSlugify(t *testing.T) {
 		{"Šta je Docker", "sta-je-docker"},
 		{"čćžšđ", "cczsdj"},
 		{"Đorđe Čavić", "djordje-cavic"},
-		{"Докер конфигурација", "doker-konfiguracija"}, // ćirilica → latinica
+		{"Докер конфигурација", "doker-konfiguracija"}, // Cyrillic → Latin
 		{"", "untitled"},
 		{"   ", "untitled"},
 		{"!!!", "untitled"},
 		{"Use restart: always", "use-restart-always"},
 		{"a b c", "a-b-c"},
-		{"Müller café", "m-ller-caf"}, // nepoznati dijakritici → -
+		{"Müller café", "m-ller-caf"}, // unknown diacritics → -
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
@@ -56,7 +56,7 @@ func TestTransliterateSerbian(t *testing.T) {
 		{"љубав", "ljubav"},
 		{"њихов", "njihov"},
 		{"џак", "dzak"},
-		{"LJUBAV", "LJUBAV"}, // velika latinica LJ ostaje LJ (ne prepoznaje se kao ligatura)
+		{"LJUBAV", "LJUBAV"}, // uppercase Latin LJ stays LJ (not recognized as a digraph)
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
