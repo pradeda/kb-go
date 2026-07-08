@@ -151,6 +151,7 @@ RULES:
 - If the context below is empty or says "No relevant results", respond with: "I couldn't find relevant information in the knowledge base for this query."
 - Do not shorten the answer — the user wants as much detail as possible from the KB.
 - Keep technical terms, project names, commands, and URLs in their original form — do not translate them.
+- Results are tagged HIGH/MEDIUM/LOW relevance — prefer HIGH over LOW; treat LOW as weak evidence.
 
 ---
 RELEVANT KB RESULTS (strategy: api-rerank):
@@ -831,17 +832,30 @@ func formatResults(results []Result) string {
 		if title == "" {
 			title = "Untitled"
 		}
-		sb.WriteString(fmt.Sprintf("### %s [%s] (%s)\n", title, r.Source, r.Date))
+		sb.WriteString(fmt.Sprintf("### %s [%s] (%s) — %s\n", title, r.Source, r.Date, relevanceLabel(r.Score)))
 		if r.Summary != "" {
 			sb.WriteString(fmt.Sprintf("Summary: %s\n", r.Summary))
 		}
 		if r.Tags != "" {
 			sb.WriteString(fmt.Sprintf("Tags: %s\n", r.Tags))
 		}
-		sb.WriteString(truncate(r.Content, 3000))
-		sb.WriteString("\n\n---\n\n")
+sb.WriteString(truncate(r.Content, 3000))
+	sb.WriteString("\n\n---\n\n")
 	}
 	return sb.String()
+}
+
+// relevanceLabel maps a final_score (relevance × decay) to a qualitative band
+// so the LLM can weigh evidence without knowing the numeric scale.
+func relevanceLabel(score float64) string {
+	switch {
+	case score >= 0.60:
+		return "HIGH relevance"
+	case score >= 0.30:
+		return "MEDIUM relevance"
+	default:
+		return "LOW relevance"
+	}
 }
 
 // ─── env loading ──────────────────────────────────────────────────────────────
