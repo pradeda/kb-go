@@ -10,12 +10,12 @@ Homelab knowledge base CLI — semantic search, note management, and full-text s
 kb ask "question"
   ├── POST /kb/search (KB Search API, :8050)
   │     ├── FastEmbed daemon (Unix socket, ~50ms) — embed query
-  │     ├── ChromaDB (cosine distance ≤ 0.40) — top 25 candidates (broad recall)
+  │     ├── ChromaDB (cosine distance ≤ 0.60) — top 25 candidates (broad recall)
   │     ├── SQLite — fetch full content + metadata by IDs
   │     ├── Cross-encoder (ms-marco-MiniLM-L-6-v2, CPU) — rerank with sigmoid relevance
   │     ├── Dedup — keep best chunk per entry
   │     ├── Time decay — final = relevance × max(1/(1+days/540), 0.3)
-  │     └── Threshold 0.5 + cap top 5
+  │     └── Threshold 0.40 + cap top 5
   └── OpenRouter LLM — synthesize answer from enriched chunks
 
 kb add note "content" "title" "tags"
@@ -37,7 +37,7 @@ kb pending
 Layer 1: ChromaDB cosine → top 25 (broad recall)
 Layer 2: Cross-encoder rerank → sigmoid → [0,1] relevance + dedup
 Layer 3: Time decay → final = relevance × max(1/(1+days/540), 0.3)
-Layer 4: Threshold 0.5 → cap top 5 (full) / top 3 (websearch)
+Layer 4: Threshold 0.40 → cap top 5 (full) / top 3 (websearch)
          No fallback — empty response is an honest signal.
 ```
 
@@ -86,7 +86,7 @@ final = sigmoid(cross_encoder(query, chunk)) × max(1/(1 + days_old/540), 0.3)
 - **Cross-encoder**: `ms-marco-MiniLM-L-6-v2`, ~80MB, runs on CPU (~200-400ms for 25 candidates)
 - **Half-life**: 540 days (~1.5yr) — conservative for homelab technical docs
 - **Decay floor**: 0.3 — entry never drops below 30% weight
-- **Threshold**: 0.5 — results below this are discarded (no fallback)
+- **Threshold**: 0.40 — results below this are discarded (no fallback)
 - **Cap**: top 5 results passed to LLM
 - **Empty response**: LLM told "no relevant results" — does NOT fabricate
 
@@ -116,6 +116,10 @@ python3 /opt/kb/compile.py --recover-db    # raw .md → rebuild SQLite
 python3 /opt/kb/compile.py --recover-raw   # SQLite → regenerate raw .md
 ```
 
+**Rebuilding the vector index** (ChromaDB data lost — e.g. container recreated with a wrong mount): embeddings are derived data, source of truth is `kb.db` + `raw/`. Set `UPDATE entries SET embedded_at=NULL`, then re-embed in **small slices (~15 entries per fresh process)** — running `compile.py` once over hundreds of entries OOM-kills on a 16GB host (nomic-embed with 8k-token sequences). ChromaDB compose must mount `./chroma_data:/data` (rust Chroma ignores `PERSIST_DIRECTORY` and always writes to `/data`).
+
+LLM output file paths in `parse_and_write()` are validated with `resolve()` + `is_relative_to()` — a hallucinated absolute or `../` path cannot write outside `/opt/kb`.
+
 ### Auto-compile watcher
 
 ```bash
@@ -125,6 +129,8 @@ sudo systemctl enable --now kb-watcher
 ```
 
 Watches `/opt/kb/raw/` via inotify, debounces 5s, runs `compile.py` automatically. No manual step needed.
+
+Uses a **blocking** `flock` (not `flock -n`): an event that arrives while a compile is already running waits for its own run instead of being silently dropped — otherwise the entry would stay unembedded (invisible to semantic search) until some future event triggered another compile.
 
 ### Full-text search (`kb search`)
 
@@ -164,4 +170,4 @@ OPENROUTER_MODEL=google/gemini-2.5-flash-lite
 | MCP server | `/opt/kb/mcp_server.py` | registered in Claude Code |
 | kb-watcher | `/opt/kb/watcher.sh` | systemd: `kb-watcher` |
 | FastEmbed daemon | `/opt/kb/embed_daemon.py` | systemd: `kb-embed` |
-| ChromaDB | Docker: `kb-chromadb` | `:8000` |
+| ChromaDB | Docker: `kb-chromadb` (image pinned, no watchtower) | `:8000` (localhost only) |

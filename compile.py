@@ -227,7 +227,10 @@ def parse_and_write(response_text):
             content = f.get("content", "").strip()
             if not rel_path or rel_path == "wiki/index.md":
                 continue
-            full_path = KB / rel_path
+            full_path = (KB / rel_path).resolve()
+            if not full_path.is_relative_to(KB.resolve()):
+                print(f"  [SKIP] path escape: {rel_path}")
+                continue
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(content, encoding="utf-8")
             written.append(rel_path)
@@ -246,7 +249,10 @@ def parse_and_write(response_text):
         content = m.group(2).strip()
         if rel_path == "wiki/index.md":
             continue
-        full_path = KB / rel_path
+        full_path = (KB / rel_path).resolve()
+        if not full_path.is_relative_to(KB.resolve()):
+            print(f"  [SKIP] path escape: {rel_path}")
+            continue
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content, encoding="utf-8")
         written.append(rel_path)

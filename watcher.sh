@@ -21,9 +21,10 @@ while read -r filepath; do
         sleep $(( MIN_INTERVAL - elapsed ))
     fi
 
-    # Lock prevents parallel compile.py runs
+    # Blocking lock: event that arrives mid-compile waits for its own run
+    # instead of being dropped (entry would stay unembedded until a future event)
     (
-        flock -n 200 || exit 0
+        flock 200
         date +%s > "$LAST_FILE"
         $COMPILE
     ) 200>"$LOCK"
