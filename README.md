@@ -89,6 +89,7 @@ final = sigmoid(cross_encoder(query, chunk)) × max(1/(1 + days_old/540), 0.3)
 - **Threshold**: 0.40 — results below this are discarded (no fallback)
 - **Cap**: top 5 results passed to LLM
 - **Empty response**: LLM told "no relevant results" — does NOT fabricate
+- **Streaming integrity**: OpenRouter SSE output is accepted only after `[DONE]`; malformed, provider-error, or prematurely closed streams fail instead of returning a silently truncated answer
 
 ### Add entries (`kb add`)
 
@@ -108,6 +109,8 @@ kb add url "https://example.com" "Interesting article" "bookmarks"
 
 After adding entries, the `kb-watcher` systemd service automatically runs `/opt/kb/compile.py`, which embeds them into ChromaDB for semantic search. No manual step needed.
 
+Raw entries are created atomically (`O_CREATE|O_EXCL`) so concurrent same-title writes cannot overwrite each other. Files use mode `0600` and their directories use `0700` because raw Markdown contains the same potentially sensitive content as `kb.db`.
+
 `compile.py` previously also generated wiki pages via OpenRouter LLM synthesis — that step is currently **disabled** (commented out in `main()`) pending future wiki reactivation. Only ChromaDB embedding runs by default.
 
 Recovery flags (for disaster scenarios):
@@ -115,6 +118,8 @@ Recovery flags (for disaster scenarios):
 python3 /opt/kb/compile.py --recover-db    # raw .md → rebuild SQLite
 python3 /opt/kb/compile.py --recover-raw   # SQLite → regenerate raw .md
 ```
+
+Titles and tags use JSON-quoted strings, which are valid YAML scalars. Both recovery directions share the same encoder/decoder, preserve quotes and control characters, and remain compatible with legacy unquoted raw files.
 
 **Rebuilding the vector index** (ChromaDB data lost — e.g. container recreated with a wrong mount): embeddings are derived data, source of truth is `kb.db` + `raw/`. Set `UPDATE entries SET embedded_at=NULL`, then re-embed in **small slices (~15 entries per fresh process)** — running `compile.py` once over hundreds of entries OOM-kills on a 16GB host (nomic-embed with 8k-token sequences). ChromaDB compose must mount `./chroma_data:/data` (rust Chroma ignores `PERSIST_DIRECTORY` and always writes to `/data`).
 
@@ -137,9 +142,11 @@ Uses a **blocking** `flock` (not `flock -n`): an event that arrives while a comp
 ```bash
 kb search "docker"          # default 20 results
 kb search "nginx" 10        # limit to 10 results
+kb search "192.168.1.174"   # punctuation-safe literal search
+kb search "/opt/kb"         # paths are safe too
 ```
 
-Uses SQLite FTS5. Does NOT require ChromaDB or OpenRouter.
+Uses SQLite FTS5. Each whitespace-delimited term is treated as a literal and terms are combined with implicit AND semantics. Advanced FTS operators (`OR`, `NOT`, `*`, and similar syntax) are intentionally not interpreted. Does NOT require ChromaDB or OpenRouter.
 
 ### List entries (`kb list`)
 
@@ -167,7 +174,7 @@ OPENROUTER_MODEL=google/gemini-2.5-flash-lite
 | Service | Path | Port/Unit |
 |---------|------|-----------|
 | KB Search API | `/opt/kb/kb_search_api.py` | `:8050` (systemd: `kb-search-api`) |
-| MCP server | `/opt/kb/mcp_server.py` | registered in Claude Code |
+| MCP server | `/opt/kb/mcp_server.py` | registered in Claude Code and Codex |
 | kb-watcher | `/opt/kb/watcher.sh` | systemd: `kb-watcher` |
 | FastEmbed daemon | `/opt/kb/embed_daemon.py` | systemd: `kb-embed` |
 | ChromaDB | Docker: `kb-chromadb` (image pinned, no watchtower) | `:8000` (localhost only) |
