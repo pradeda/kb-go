@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,7 +34,7 @@ const (
 
 var (
 	httpQuick = &http.Client{Timeout: 30 * time.Second}
-	httpSlow  = &http.Client{Timeout: 60 * time.Second}
+	httpSlow  = &http.Client{Timeout: 150 * time.Second}
 )
 
 type Result struct {
@@ -235,8 +236,9 @@ func cmdAdd(ctx context.Context) {
 		title = firstLine(content, 80)
 	}
 
-	ts := time.Now().Format("2006-01-02T15:04:05")
-	dateStr := time.Now().Format("2006-01-02")
+	now := time.Now()
+	ts := now.Format("2006-01-02T15:04:05")
+	dateStr := now.Format("2006-01-02")
 	slug := slugify(title)
 	if slug == "" {
 		slug = slugify(content)
@@ -250,10 +252,13 @@ func cmdAdd(ctx context.Context) {
 		subdir = "urls"
 	}
 
-	// UnixMilli suffix prevents filename collision when the same title is added twice on the same day
-	rawPath := fmt.Sprintf("%s/%s/%s-%s-%d.md", rawDir, subdir, dateStr, slug, time.Now().UnixMilli())
-	if err := os.MkdirAll(fmt.Sprintf("%s/%s", rawDir, subdir), 0755); err != nil {
+	rawSubdir := fmt.Sprintf("%s/%s", rawDir, subdir)
+	if err := os.MkdirAll(rawSubdir, 0700); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating directory: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Chmod(rawSubdir, 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "Error securing directory: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -266,7 +271,8 @@ saved: %s
 
 %s
 `, entryType, yamlQuote(title), yamlQuote(tags), ts, content)
-	if err := os.WriteFile(rawPath, []byte(frontmatter), 0644); err != nil {
+	rawPath, err := writeRawFileExclusive(rawSubdir, fmt.Sprintf("%s-%s", dateStr, slug), []byte(frontmatter))
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
 		os.Exit(1)
 	}
@@ -341,6 +347,7 @@ func cmdList(ctx context.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error iterating rows: %v\n", err)
+		os.Exit(1)
 	}
 }
 
@@ -405,6 +412,7 @@ func cmdSearch(ctx context.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error iterating rows: %v\n", err)
+		os.Exit(1)
 	}
 
 	if count == 0 {
@@ -447,6 +455,7 @@ func cmdPending(ctx context.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error iterating rows: %v\n", err)
+		os.Exit(1)
 	}
 
 	if count == 0 {
@@ -550,55 +559,61 @@ func truncate(s string, n int) string {
 	return string(runes[:n-3]) + "..."
 }
 
-// yamlQuote returns a YAML-safe representation of a string.
+// yamlQuote returns a JSON string literal, which is also a valid YAML scalar.
+// Always quoting avoids YAML's implicit booleans/numbers and control-character edge cases.
 func yamlQuote(s string) string {
-	if s == "" {
+	quoted, err := json.Marshal(s)
+	if err != nil {
 		return `""`
 	}
-	needsQuote := strings.ContainsAny(s, `:#"'`) ||
-		strings.HasPrefix(s, " ") || strings.HasSuffix(s, " ") ||
-		strings.HasPrefix(s, "-") || strings.HasPrefix(s, "?") ||
-		strings.HasPrefix(s, "!") || strings.HasPrefix(s, "&") || strings.HasPrefix(s, "*") ||
-		strings.HasPrefix(s, "{") || strings.HasPrefix(s, "}") ||
-		strings.HasPrefix(s, "[") || strings.HasPrefix(s, "]") ||
-		strings.HasPrefix(s, "@") || strings.HasPrefix(s, "`") ||
-		strings.HasPrefix(s, ",") || strings.HasPrefix(s, "|") || strings.HasPrefix(s, ">") ||
-		strings.Contains(s, "\n") || strings.Contains(s, ": ") ||
-		s == "true" || s == "false" || s == "null" || s == "~" ||
-		isNumericLike(s)
-	if !needsQuote {
-		return s
-	}
-	escaped := strings.ReplaceAll(s, `\`, `\\`)
-	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
-	escaped = strings.ReplaceAll(escaped, "\n", `\n`)
-	return `"` + escaped + `"`
+	return string(quoted)
 }
 
-func isNumericLike(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if (r < '0' || r > '9') && r != '.' && r != '-' && r != '+' && r != 'e' && r != 'E' {
-			return false
-		}
-	}
-	return true
-}
-
-// parseFTSQuery escapes an FTS5 query: if it contains special characters,
-// treats it as a phrase (with escaped double quotes).
+// parseFTSQuery treats every whitespace-delimited term as a literal FTS5 phrase.
+// This preserves implicit AND semantics while making IPs, paths, apostrophes, and
+// operator words safe. Advanced FTS syntax is intentionally not accepted here.
 func parseFTSQuery(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
 		return ""
 	}
-	if strings.ContainsAny(s, `*():"^+-`) {
-		escaped := strings.ReplaceAll(s, `"`, `""`)
-		return `"` + escaped + `"`
+	quoted := make([]string, 0, len(fields))
+	for _, field := range fields {
+		escaped := strings.ReplaceAll(field, `"`, `""`)
+		quoted = append(quoted, `"`+escaped+`"`)
 	}
-	return s
+	return strings.Join(quoted, " ")
+}
+
+// writeRawFileExclusive creates a private raw file without ever overwriting an
+// existing entry. O_EXCL is the collision guarantee; the nanosecond suffix only
+// keeps the common path to a single attempt.
+func writeRawFileExclusive(dir, prefix string, data []byte) (string, error) {
+	for attempt := 0; attempt < 100; attempt++ {
+		suffix := time.Now().UnixNano()
+		path := fmt.Sprintf("%s/%s-%d.md", dir, prefix, suffix)
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+
+		_, writeErr := file.Write(data)
+		closeErr := file.Close()
+		if writeErr != nil || closeErr != nil {
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				fmt.Fprintf(os.Stderr, "warn: could not remove incomplete file %s: %v\n", path, removeErr)
+			}
+			if writeErr != nil {
+				return "", writeErr
+			}
+			return "", closeErr
+		}
+		return path, nil
+	}
+	return "", fmt.Errorf("could not allocate unique raw filename after 100 attempts")
 }
 
 // openDB opens SQLite with WAL and busy_timeout (prevents "database is locked" errors).
@@ -690,6 +705,7 @@ func callOpenRouter(ctx context.Context, prompt string, start time.Time) error {
 func streamCompletion(ctx context.Context, body io.Reader, start time.Time) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	sawDone := false
 
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -701,9 +717,13 @@ func streamCompletion(ctx context.Context, body io.Reader, start time.Time) erro
 		}
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
+			sawDone = true
 			break
 		}
 		var chunk struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
 			Choices []struct {
 				Delta struct {
 					Content string `json:"content"`
@@ -711,14 +731,23 @@ func streamCompletion(ctx context.Context, body io.Reader, start time.Time) erro
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
+			return fmt.Errorf("invalid SSE data: %w", err)
+		}
+		if chunk.Error != nil {
+			return fmt.Errorf("stream error: %s", chunk.Error.Message)
 		}
 		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
 			fmt.Print(chunk.Choices[0].Delta.Content)
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if !sawDone {
+		return fmt.Errorf("OpenRouter stream ended before [DONE]")
+	}
 	fmt.Println()
-	return scanner.Err()
+	return nil
 }
 
 // ─── KB Search API client ─────────────────────────────────────────────────────
@@ -839,8 +868,8 @@ func formatResults(results []Result) string {
 		if r.Tags != "" {
 			sb.WriteString(fmt.Sprintf("Tags: %s\n", r.Tags))
 		}
-sb.WriteString(truncate(r.Content, 3000))
-	sb.WriteString("\n\n---\n\n")
+		sb.WriteString(truncate(r.Content, 3000))
+		sb.WriteString("\n\n---\n\n")
 	}
 	return sb.String()
 }

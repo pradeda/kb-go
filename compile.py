@@ -43,6 +43,20 @@ def read_file_safe(path):
     except Exception:
         return ""
 
+def encode_frontmatter_value(value):
+    """Return a JSON string literal, which is also a valid YAML scalar."""
+    return json.dumps("" if value is None else str(value), ensure_ascii=False)
+
+def decode_frontmatter_value(value):
+    """Decode values written by encode_frontmatter_value; accept legacy scalars."""
+    value = value.strip()
+    if value.startswith('"'):
+        decoded = json.loads(value)
+        if not isinstance(decoded, str):
+            raise ValueError(f"Expected string frontmatter value, got {type(decoded)}")
+        return decoded
+    return value
+
 def get_uncompiled():
     db = get_db()
     rows = db.execute("""
@@ -392,7 +406,7 @@ def recover_db_from_raw():
                         for line in parts[1].strip().split("\n"):
                             if ":" in line:
                                 k, v = line.split(":", 1)
-                                fm[k.strip()] = v.strip()
+                                fm[k.strip()] = decode_frontmatter_value(v)
                         body = parts[2].strip()
                     else:
                         body = content
@@ -463,10 +477,22 @@ def recover_raw_from_db():
 
         if not raw_file or not use_existing:
             raw_file = RAW / subdir / f"{date_str}-{slug}.md"
-        raw_file.parent.mkdir(parents=True, exist_ok=True)
+        raw_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        raw_file.parent.chmod(0o700)
 
-        fm = f"---\ntype: {etype}\ntitle: {title}\ntags: {tags}\nsaved: {created}\n---\n\n{content}"
-        raw_file.write_text(fm, encoding="utf-8")
+        fm = (
+            f"---\ntype: {etype}\n"
+            f"title: {encode_frontmatter_value(title)}\n"
+            f"tags: {encode_frontmatter_value(tags)}\n"
+            f"saved: {created}\n---\n\n{content}"
+        )
+        try:
+            with raw_file.open("x", encoding="utf-8") as handle:
+                handle.write(fm)
+            raw_file.chmod(0o600)
+        except FileExistsError:
+            skipped += 1
+            continue
         recovered += 1
         print(f"  [OK] {raw_file.name}")
 

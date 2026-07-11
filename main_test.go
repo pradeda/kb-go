@@ -1,8 +1,14 @@
 package main
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestSlugify(t *testing.T) {
@@ -95,9 +101,9 @@ func TestTruncate(t *testing.T) {
 
 func TestFirstLine(t *testing.T) {
 	cases := []struct {
-		in      string
-		maxLen  int
-		want    string
+		in     string
+		maxLen int
+		want   string
 	}{
 		{"Hello world", 80, "Hello world"},
 		{"First line\nSecond line", 80, "First line"},
@@ -121,8 +127,8 @@ func TestYAMLQuote(t *testing.T) {
 		in, want string
 	}{
 		{"", `""`},
-		{"prosto", "prosto"},
-		{"Docker tip", "Docker tip"},
+		{"prosto", `"prosto"`},
+		{"Docker tip", `"Docker tip"`},
 		{"Greška: NFS timeout", `"Greška: NFS timeout"`},
 		{`with "quote"`, `"with \"quote\""`},
 		{"multi\nline", `"multi\nline"`},
@@ -136,12 +142,21 @@ func TestYAMLQuote(t *testing.T) {
 		{"3.14", `"3.14"`},
 		{"#hash", `"#hash"`},
 		{"key: value", `"key: value"`},
+		{"tab\tvalue", `"tab\tvalue"`},
+		{"carriage\rreturn", `"carriage\rreturn"`},
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
 			got := yamlQuote(c.in)
 			if got != c.want {
 				t.Errorf("yamlQuote(%q) = %q, want %q", c.in, got, c.want)
+			}
+			var roundTrip string
+			if err := json.Unmarshal([]byte(got), &roundTrip); err != nil {
+				t.Fatalf("yamlQuote(%q) produced invalid JSON/YAML scalar: %v", c.in, err)
+			}
+			if roundTrip != c.in {
+				t.Errorf("yamlQuote(%q) round trip = %q", c.in, roundTrip)
 			}
 		})
 	}
@@ -152,13 +167,17 @@ func TestParseFTSQuery(t *testing.T) {
 		in, want string
 	}{
 		{"", ""},
-		{"docker", "docker"},
-		{"docker nginx", "docker nginx"},
+		{"docker", `"docker"`},
+		{"docker nginx", `"docker" "nginx"`},
 		{"docker*", `"docker*"`},
-		{"docker (nginx)", `"docker (nginx)"`},
-		{`has "quote"`, `"has ""quote"""`},
+		{"docker (nginx)", `"docker" "(nginx)"`},
+		{`has "quote"`, `"has" """quote"""`},
 		{"a:b", `"a:b"`},
 		{"docker-nginx", `"docker-nginx"`},
+		{"192.168.1.174", `"192.168.1.174"`},
+		{"/opt/kb", `"/opt/kb"`},
+		{"don't", `"don't"`},
+		{"docker OR nginx", `"docker" "OR" "nginx"`},
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
@@ -170,12 +189,82 @@ func TestParseFTSQuery(t *testing.T) {
 	}
 }
 
+func TestParseFTSQueryExecutesCommonHomelabQueries(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE VIRTUAL TABLE entries_fts USING fts5(content)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO entries_fts(content) VALUES (?)`,
+		"192.168.1.174 /opt/kb don't docker nginx C++"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, query := range []string{"192.168.1.174", "/opt/kb", "don't", "C++"} {
+		t.Run(query, func(t *testing.T) {
+			var count int
+			err := db.QueryRow(`SELECT count(*) FROM entries_fts WHERE entries_fts MATCH ?`,
+				parseFTSQuery(query)).Scan(&count)
+			if err != nil {
+				t.Fatalf("query %q failed: %v", query, err)
+			}
+			if count != 1 {
+				t.Fatalf("query %q matched %d rows, want 1", query, count)
+			}
+		})
+	}
+}
+
+func TestWriteRawFileExclusiveCreatesPrivateUniqueFiles(t *testing.T) {
+	dir := t.TempDir()
+	first, err := writeRawFileExclusive(dir, "note", []byte("first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := writeRawFileExclusive(dir, "note", []byte("second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("exclusive writes reused path %q", first)
+	}
+	for _, path := range []string{first, second} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0600 {
+			t.Errorf("%s mode = %o, want 600", filepath.Base(path), got)
+		}
+	}
+}
+
+func TestStreamCompletionRequiresDone(t *testing.T) {
+	complete := "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
+	if err := streamCompletion(context.Background(), strings.NewReader(complete), time.Now()); err != nil {
+		t.Fatalf("complete stream failed: %v", err)
+	}
+
+	incomplete := "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"
+	if err := streamCompletion(context.Background(), strings.NewReader(incomplete), time.Now()); err == nil {
+		t.Fatal("incomplete stream returned success")
+	}
+
+	malformed := "data: {not-json}\n\ndata: [DONE]\n\n"
+	if err := streamCompletion(context.Background(), strings.NewReader(malformed), time.Now()); err == nil {
+		t.Fatal("malformed stream returned success")
+	}
+}
+
 func TestParseEnvLine(t *testing.T) {
 	cases := []struct {
-		line    string
-		key     string
-		val     string
-		ok      bool
+		line string
+		key  string
+		val  string
+		ok   bool
 	}{
 		{"KEY=value", "KEY", "value", true},
 		{`KEY="value"`, "KEY", "value", true},
