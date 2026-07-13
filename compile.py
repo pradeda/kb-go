@@ -21,6 +21,11 @@ CHROMA_COLLECTION = "kb_collection"
 BATCH_SIZE        = 5
 MAX_TOKENS        = 16000
 
+# Gate 2: secret scanner — shared rules with kb-go via secret_patterns.json
+SECRET_PATTERNS_FILE = KB / "secret_patterns.json"
+QUARANTINE_DIR       = KB / "quarantine"
+QUARANTINE_LOG       = KB / "quarantine.log"
+
 # --- load .env ---
 if ENV_FILE.exists():
     for line in ENV_FILE.read_text().splitlines():
@@ -498,6 +503,127 @@ def recover_raw_from_db():
 
     print(f"\nRecover RAW done: {recovered} recovered, {skipped} skipped (already exists)")
 
+# ─── Gate 2: secret scanner (embed-time safety-net) ─────────────────────────
+# Mirrors kb-go/secretscan.go. RE2-only patterns match identically in both.
+
+_secret_rules = None
+
+def load_secret_rules():
+    global _secret_rules
+    if _secret_rules is not None:
+        return _secret_rules
+    try:
+        data = json.loads(SECRET_PATTERNS_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"  [WARN] secret scanner disabled: {e}")
+        _secret_rules = {"patterns": [], "allow": [], "allow_sub": []}
+        return _secret_rules
+    pats = []
+    for p in data.get("patterns", []):
+        try:
+            p["_re"] = re.compile(p["regex"])
+        except re.error as e:
+            print(f"  [WARN] pattern {p.get('name')}: {e}")
+            continue
+        pats.append(p)
+    _secret_rules = {
+        "patterns": pats,
+        "allow": [a.lower() for a in data.get("allowlist", [])],
+        "allow_sub": [a.lower() for a in data.get("allow_contains", [])],
+    }
+    return _secret_rules
+
+def _shannon(s):
+    if not s:
+        return 0.0
+    from math import log2
+    data = s.encode("utf-8", "replace")
+    freq = {}
+    for b in data:
+        freq[b] = freq.get(b, 0) + 1
+    n = len(data)
+    return -sum((c / n) * log2(c / n) for c in freq.values())
+
+def _allowed(rules, value):
+    v = value.strip().lower()
+    if not v:
+        return True
+    if v in rules["allow"]:
+        return True
+    return any(a in v for a in rules["allow_sub"])
+
+def sanitize_secrets(content):
+    rules = load_secret_rules()
+    hits = []
+    for p in rules["patterns"]:
+        for m in reversed(list(p["_re"].finditer(content))):
+            try:
+                start, end = m.span(p["capture_group"])
+            except (re.error, IndexError):
+                continue
+            if start < 0:
+                continue
+            value = content[start:end]
+            if _allowed(rules, value):
+                continue
+            if len(value) < p.get("min_len", 0):
+                continue
+            me = p.get("min_entropy", 0)
+            if me > 0 and _shannon(value) < me:
+                continue
+            hits.append((p["name"], p["action"], value))
+            if p["action"] == "redact":
+                content = content[:start] + p["placeholder"] + content[end:]
+    return content, hits
+
+def _record_quarantine(entry_id, orig_content, raw_path, hits):
+    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    bak = ""
+    try:
+        QUARANTINE_DIR.mkdir(mode=0o700, exist_ok=True)
+        bak = QUARANTINE_DIR / f"{entry_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.orig"
+        bak.write_text(orig_content or "", encoding="utf-8")
+        os.chmod(bak, 0o600)
+    except Exception as e:
+        print(f"  [WARN] quarantine backup failed: {e}")
+    # Redact the on-disk raw archive too, so rsync/NAS copies stay clean.
+    if raw_path:
+        try:
+            rp = Path(raw_path)
+            if rp.exists():
+                raw = rp.read_text(encoding="utf-8")
+                clean_raw, _ = sanitize_secrets(raw)
+                if clean_raw != raw:
+                    rp.write_text(clean_raw, encoding="utf-8")
+        except Exception as e:
+            print(f"  [WARN] raw redact failed for {raw_path}: {e}")
+    names = ",".join(f"{h[0]}:{h[1]}" for h in hits)
+    try:
+        with open(QUARANTINE_LOG, "a") as f:
+            f.write(f"{ts} id={entry_id} source=compile hits={names} backup={bak}\n")
+        os.chmod(QUARANTINE_LOG, 0o600)
+    except Exception as e:
+        print(f"  [WARN] quarantine log failed: {e}")
+
+def sanitize_unembedded(rows):
+    cleaned = []
+    db = get_db()
+    for row in rows:
+        entry_id, etype, content, title, tags, summary, raw_path = row
+        new_content, ch = sanitize_secrets(content or "")
+        new_title,   th = sanitize_secrets(title or "")
+        new_summary, sh = sanitize_secrets(summary or "")
+        redact_hits = [h for h in (ch + th + sh) if h[1] == "redact"]
+        if redact_hits and (new_content != (content or "") or new_title != (title or "") or new_summary != (summary or "")):
+            db.execute("UPDATE entries SET content=?, title=?, summary=? WHERE id=?",
+                       (new_content, new_title, new_summary, entry_id))
+            db.commit()
+            _record_quarantine(entry_id, content, raw_path, redact_hits)
+            print(f"  [REDACT] #{entry_id}: {', '.join(h[0] for h in redact_hits)}")
+        cleaned.append((entry_id, etype, new_content, new_title, tags, new_summary, raw_path))
+    db.close()
+    return cleaned
+
 def main():
     if "--recover-db" in sys.argv:
         recover_db_from_raw()
@@ -514,6 +640,7 @@ def main():
 
     unembedded = get_unembedded()
     if unembedded:
+        unembedded = sanitize_unembedded(unembedded)
         embedded_ids = embed_entries(unembedded)
         if embedded_ids:
             mark_embedded(embedded_ids)

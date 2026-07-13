@@ -76,6 +76,32 @@ func TestSanitize_Allowlist(t *testing.T) {
 	}
 }
 
+func TestSanitize_ProseNotRedacted(t *testing.T) {
+	// "secret"/"password" followed by a plain word (no : or =) is prose, not an
+	// assignment — must not be redacted. Regression for the self-dogfood FP where
+	// "KB secret scanner" got mangled to "KB secret <REDACTED_SECRET>".
+	r := mustRules(t)
+	cases := []string{
+		"KB secret scanner implementation",
+		"the secret sauce of this design",
+		"password reset flow works fine",
+		"this is a secret project nobody knows",
+	}
+	for _, in := range cases {
+		t.Run(in, func(t *testing.T) {
+			out, hits := r.Sanitize(in)
+			if out != in {
+				t.Errorf("prose mutated: %q -> %q", in, out)
+			}
+			for _, h := range hits {
+				if h.Action == "redact" {
+					t.Errorf("prose produced redact hit: %+v", h)
+				}
+			}
+		})
+	}
+}
+
 func TestSanitize_Idempotent(t *testing.T) {
 	r := mustRules(t)
 	once, _ := r.Sanitize("key sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef x")

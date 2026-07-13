@@ -19,10 +19,13 @@ kb ask "question"
   └── OpenRouter LLM — synthesize answer from enriched chunks
 
 kb add note "content" "title" "tags"
+  ├── Secret scanner (Gate 1) — redact credentials before they are stored
   ├── Write raw markdown file (frontmatter + body)
   └── Insert into SQLite entries table (FTS5 auto-indexed via triggers)
        │
-       └── kb-watcher (inotify, 5s debounce) → compile.py → ChromaDB
+       └── kb-watcher (inotify, 5s debounce) → compile.py
+             ├── Secret scanner (Gate 2) — embed-time safety-net over entries.content
+             └── ChromaDB
 
 kb search "query"
   └── SQLite FTS5 full-text search (entries_fts)
@@ -110,6 +113,19 @@ kb add url "https://example.com" "Interesting article" "bookmarks"
 After adding entries, the `kb-watcher` systemd service automatically runs `/opt/kb/compile.py`, which embeds them into ChromaDB for semantic search. No manual step needed.
 
 Raw entries are created atomically (`O_CREATE|O_EXCL`) so concurrent same-title writes cannot overwrite each other. Files use mode `0600` and their directories use `0700` because raw Markdown contains the same potentially sensitive content as `kb.db`.
+
+#### Secret scanner (credential leak prevention)
+
+Because automated ingest (LLMs via the MCP `add` tool, pipelines, monitoring notes) can accidentally write tokens, API keys, or passwords into a note, every write is scanned and secrets are redacted in place **before** the content becomes searchable. Two gates share one ruleset — `/opt/kb/secret_patterns.json` (RE2 subset, so the Go and Python sides redact identically):
+
+- **Gate 1** (`secretscan.go`, in `kb add`): runs synchronously before the SQLite `INSERT`. This is the important one — `kb add` writes to `entries` immediately, so content is FTS-searchable before it is ever embedded.
+- **Gate 2** (`compile.py`, `sanitize_unembedded`): an embed-time safety-net over `entries.content`, for any row that reached the DB without going through `kb add` (direct raw drop, rsync, future tools). An `UPDATE` propagates to FTS via triggers; the on-disk raw archive is redacted too.
+
+On a hit the value is replaced with a typed placeholder (`<REDACTED_OPENROUTER_KEY>`, `<REDACTED_SECRET>`, …), the original is backed up to `/opt/kb/quarantine/<id>-<ts>.orig` (`0600`), and one line is appended to `/opt/kb/quarantine.log`. There is no review queue and no notification — a blocked secret simply never enters the KB.
+
+Patterns are tiered: **value-shaped Tier 1** (provider prefixes like `sk-or-v1-`, `sk-ant-`, `ghp_`; URL basic-auth `scheme://user:pass@`; `PASSWORD=`/`secret=` assignments) auto-redact on match; a **Tier 2 generic keyword-assignment** pattern is log-only behind a Shannon-entropy gate. An `allowlist` (exact) plus `allow_contains` (substring) suppress false positives such as `SONARR_API_KEY`, `KEY`, and placeholder passwords. Adding coverage for a new service is a one-line edit to `secret_patterns.json` — both gates read it at runtime, no rebuild needed.
+
+> **Gotcha:** do not put `\b` before a secret keyword in the keyword patterns — `_` is a word char, so `\bpassword` fails to match `FOO_PASSWORD` / `SONARR_API_KEY=...`, the most common leak form. Covered by `secretscan_test.go`.
 
 `compile.py` previously also generated wiki pages via OpenRouter LLM synthesis — that step is currently **disabled** (commented out in `main()`) pending future wiki reactivation. Only ChromaDB embedding runs by default.
 
