@@ -27,6 +27,10 @@ const (
 	sqliteDSN     = dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on"
 	rawDir        = "/opt/kb/raw"
 	wikiIndex     = "/opt/kb/wiki/index.md"
+
+	secretPatternsPath = "/opt/kb/secret_patterns.json"
+	quarantineDir      = "/opt/kb/quarantine"
+	quarantineLog      = "/opt/kb/quarantine.log"
 	openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
 	defaultModel  = "google/gemini-2.5-flash-lite"
 	kbSearchAPI   = "http://192.168.1.174:8050/kb/search"
@@ -232,6 +236,18 @@ func cmdAdd(ctx context.Context) {
 		}
 	}
 
+	// Gate 1: redact secrets before content reaches SQLite/FTS or the raw file.
+	origContent := content
+	var scanHits []scanHit
+	if rules, rerr := loadSecretRules(secretPatternsPath); rerr != nil {
+		fmt.Fprintf(os.Stderr, "warn: secret scanner disabled (%v)\n", rerr)
+	} else {
+		content, scanHits = rules.Sanitize(content)
+		if title != "" {
+			title, _ = rules.Sanitize(title)
+		}
+	}
+
 	if title == "" {
 		title = firstLine(content, 80)
 	}
@@ -245,6 +261,19 @@ func cmdAdd(ctx context.Context) {
 	}
 	if slug == "" {
 		slug = "untitled"
+	}
+
+	if len(scanHits) > 0 {
+		backup := recordQuarantine(origContent, content, "cli", slug, scanHits)
+		names := make([]string, 0, len(scanHits))
+		for _, h := range scanHits {
+			names = append(names, h.Pattern+"("+h.Action+")")
+		}
+		fmt.Fprintf(os.Stderr, "kb add: redacted %d secret(s) before write: %s\n",
+			len(scanHits), strings.Join(names, ", "))
+		if backup != "" {
+			fmt.Fprintf(os.Stderr, "         original: %s\n", backup)
+		}
 	}
 
 	subdir := "notes"
