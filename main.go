@@ -30,8 +30,9 @@ const (
 )
 
 var (
-	httpQuick = &http.Client{Timeout: 30 * time.Second}
-	httpSlow  = &http.Client{Timeout: 150 * time.Second}
+	httpQuick     = &http.Client{Timeout: 30 * time.Second}
+	httpSlow      = &http.Client{Timeout: 150 * time.Second}
+	kbSearchAPIV2 = "http://192.168.1.174:8050/v2/kb/search"
 )
 
 type Result struct {
@@ -49,11 +50,33 @@ type commandInvocation struct {
 	Command string
 	Args    []string
 	Profile CorpusProfile
+	Scope   string
 }
 
 type singleCorpusFlag struct {
 	value *string
 	set   bool
+}
+
+type singleScopeFlag struct {
+	value *string
+	set   bool
+}
+
+func (f *singleScopeFlag) String() string {
+	if f == nil || f.value == nil {
+		return ""
+	}
+	return *f.value
+}
+
+func (f *singleScopeFlag) Set(value string) error {
+	if f.set {
+		return errors.New("--scope may be specified only once")
+	}
+	f.set = true
+	*f.value = value
+	return nil
 }
 
 func (f *singleCorpusFlag) String() string {
@@ -88,7 +111,7 @@ func main() {
 
 	switch invocation.Command {
 	case "ask":
-		cmdAsk(ctx, invocation.Args, invocation.Profile)
+		cmdAsk(ctx, invocation.Args, invocation.Profile, invocation.Scope)
 	case "add":
 		cmdAdd(ctx, invocation.Args, invocation.Profile)
 	case "list":
@@ -115,12 +138,18 @@ func parseInvocation(args []string) (commandInvocation, error) {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	corpusName := defaultCorpus
-	if command != "ask" {
+	scope := ""
+	if command == "ask" {
+		fs.Var(&singleScopeFlag{value: &scope}, "scope", "search scope (homelab, ai, both, or auto)")
+	} else {
 		fs.Var(&singleCorpusFlag{value: &corpusName}, "corpus", "target corpus (homelab or ai)")
 	}
 	commandArgs := args[1:]
 	flagArgs := []string{}
-	if command != "ask" && len(commandArgs) > 0 &&
+	if command == "ask" && len(commandArgs) > 0 &&
+		(commandArgs[0] == "--scope" || strings.HasPrefix(commandArgs[0], "--scope=")) {
+		flagArgs = commandArgs
+	} else if command != "ask" && len(commandArgs) > 0 &&
 		(commandArgs[0] == "--corpus" || strings.HasPrefix(commandArgs[0], "--corpus=")) {
 		flagArgs = commandArgs
 	}
@@ -135,20 +164,26 @@ func parseInvocation(args []string) (commandInvocation, error) {
 		if arg == "--corpus" || strings.HasPrefix(arg, "--corpus=") {
 			return commandInvocation{}, errors.New("--corpus must appear immediately after the command")
 		}
+		if arg == "--scope" || strings.HasPrefix(arg, "--scope=") {
+			return commandInvocation{}, errors.New("--scope is valid only for ask and must appear immediately after the command")
+		}
+	}
+	if scope != "" && scope != "homelab" && scope != "ai" && scope != "both" && scope != "auto" {
+		return commandInvocation{}, fmt.Errorf("unknown scope %q (allowed: homelab, ai, both, auto)", scope)
 	}
 
 	profile, err := corpusProfile(corpusName)
 	if err != nil {
 		return commandInvocation{}, err
 	}
-	return commandInvocation{Command: command, Args: positionalArgs, Profile: profile}, nil
+	return commandInvocation{Command: command, Args: positionalArgs, Profile: profile, Scope: scope}, nil
 }
 
 func printUsage() {
 	fmt.Println(`Usage: kb <command> [args...]
 
 Commands:
-  ask "question"                 Semantic search + LLM synthesis
+  ask [--scope homelab|ai|both|auto] "question"       Semantic search + LLM synthesis
   add [--corpus homelab|ai] note "content" "title" "tags"
   add [--corpus homelab|ai] note - "title" "tags"   Add from stdin
   add [--corpus homelab|ai] url "url" "title" "tags"
@@ -171,7 +206,7 @@ Examples:
 
 // ─── ask ──────────────────────────────────────────────────────────────────────
 
-func cmdAsk(ctx context.Context, args []string, profile CorpusProfile) {
+func cmdAsk(ctx context.Context, args []string, profile CorpusProfile, invocationScope string) {
 	start := time.Now()
 
 	if len(args) < 1 {
@@ -180,6 +215,12 @@ func cmdAsk(ctx context.Context, args []string, profile CorpusProfile) {
 	}
 
 	query := strings.Join(args, " ")
+	if invocationScope != "" {
+		if err := cmdAskV2(ctx, query, invocationScope, profile, start); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 
 	results, err := searchViaAPI(ctx, query, start)
 	if err != nil {

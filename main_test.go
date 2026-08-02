@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -62,6 +65,27 @@ func TestCorpusAwareCLIParsing(t *testing.T) {
 	}
 }
 
+func TestAskScopeCLIParsing(t *testing.T) {
+	for _, tc := range []struct {
+		argv  []string
+		scope string
+		args  []string
+	}{
+		{[]string{"ask", "--scope", "homelab", "question"}, "homelab", []string{"question"}},
+		{[]string{"ask", "--scope=ai", "question", "detail"}, "ai", []string{"question", "detail"}},
+		{[]string{"ask", "--scope", "both", "question"}, "both", []string{"question"}},
+		{[]string{"ask", "--scope", "auto", "question"}, "auto", []string{"question"}},
+	} {
+		got, err := parseInvocation(tc.argv)
+		if err != nil {
+			t.Fatalf("parseInvocation(%q): %v", tc.argv, err)
+		}
+		if got.Scope != tc.scope || got.Profile.Name != "homelab" || !reflect.DeepEqual(got.Args, tc.args) {
+			t.Errorf("parseInvocation(%q) = scope=%q corpus=%q args=%q, want %q homelab %q", tc.argv, got.Scope, got.Profile.Name, got.Args, tc.scope, tc.args)
+		}
+	}
+}
+
 func TestCorpusCLIRejectsUnsafeTargetsAndLateFlags(t *testing.T) {
 	for _, argv := range [][]string{
 		{"add", "--corpus", "both", "note", "body"},
@@ -70,10 +94,48 @@ func TestCorpusCLIRejectsUnsafeTargetsAndLateFlags(t *testing.T) {
 		{"ask", "--corpus", "ai", "question"},
 		{"list", "--corpus", "ai", "--corpus", "homelab", "1"},
 		{"add", "--corpus=ai", "--corpus=homelab", "note", "body"},
+		{"ask", "--scope", "unknown", "question"},
+		{"ask", "--scope", "ai", "--scope", "homelab", "question"},
+		{"ask", "question", "--scope", "ai"},
+		{"search", "--scope", "ai", "question"},
 	} {
 		if _, err := parseInvocation(argv); err == nil {
 			t.Errorf("parseInvocation(%q) unexpectedly succeeded", argv)
 		}
+	}
+}
+
+func TestSearchViaAPIV2Contract(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Error(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"query":"q","requested_scope":"both","selected_scope":"both","routing_mode":"explicit","routing_reason":"explicit_scope","needs_clarification":false,"router_version":null,"degraded_corpora":[],"total_count":2,"corpora":{"homelab":{"searched":true,"available":true,"count":1,"results":[{"corpus":"homelab","entry_id":1,"ref":"homelab:1","title":"H","content":"HC","tags":"h","public_source_url":null,"link":"kb://homelab/1","distance":0.1,"relevance":0.9,"final_score":0.8}]},"ai":{"searched":true,"available":true,"count":1,"results":[{"corpus":"ai","entry_id":1,"ref":"ai:1","title":"A","content":"AC","tags":"a","public_source_url":null,"link":"kb://ai/1","distance":0.1,"relevance":0.9,"final_score":0.9}]}}}`)
+	}))
+	defer server.Close()
+
+	oldURL := kbSearchAPIV2
+	kbSearchAPIV2 = server.URL
+	defer func() { kbSearchAPIV2 = oldURL }()
+	t.Setenv("KB_V2_TOKEN_KB_CLI_LOCAL", "test-token")
+	response, err := searchViaAPIV2(context.Background(), "q", "both", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestBody["scope"] != "both" || requestBody["allow_degraded"] != false || requestBody["top_k"] != float64(5) {
+		t.Fatalf("unexpected v2 request: %#v", requestBody)
+	}
+	if response.TotalCount != 2 || response.Corpora["homelab"].Results[0].Ref != "homelab:1" || response.Corpora["ai"].Results[0].Ref != "ai:1" {
+		t.Fatalf("unexpected v2 response: %#v", response)
+	}
+	formatted := formatV2Results(response)
+	if !strings.Contains(formatted, "homelab:1") || !strings.Contains(formatted, "ai:1") {
+		t.Fatalf("formatted response lacks qualified refs: %s", formatted)
 	}
 }
 

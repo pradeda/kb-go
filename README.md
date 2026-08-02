@@ -18,6 +18,12 @@ kb ask "question"
   │     └── Threshold 0.40 + cap top 5
   └── OpenRouter LLM — synthesize answer from enriched chunks
 
+kb ask --scope homelab|ai|both|auto "question"
+  ├── POST /v2/kb/search with Bearer auth and allow_degraded=false
+  ├── Fixed-shape, corpus-grouped results with qualified refs (homelab:1 / ai:1)
+  ├── Homelab wiki index only when Homelab is selected
+  └── OpenRouter LLM — synthesize while keeping corpus evidence distinct
+
 kb add note "content" "title" "tags"
   ├── Secret scanner (Gate 1) — redact credentials before they are stored
   ├── Write raw markdown file (frontmatter + body)
@@ -89,9 +95,15 @@ missing collection or corpus/model/dimension/metric mismatch.
 
 ```bash
 kb ask "how does NFS work in the homelab?"
+kb ask --scope ai "what does the research corpus say about local models?"
+kb ask --scope both "compare deployed state with research notes"
 ```
 
 Requires: OpenRouter API key in `/opt/kb/.env`, KB Search API running on `:8050`.
+Scoped calls additionally require `KB_V2_TOKEN_KB_CLI_LOCAL` in the same private
+environment file. Legacy calls without `--scope` remain byte-compatible and
+Homelab-only. `--scope auto` intentionally returns an error until the calibrated
+router is activated in a later phase.
 
 Results are ranked by a 4-layer pipeline (see Architecture above). The final score combines cross-encoder relevance with time decay:
 
