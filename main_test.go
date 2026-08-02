@@ -6,10 +6,98 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestLegacyCLIInvocationGolden(t *testing.T) {
+	type goldenCase struct {
+		Name    string   `json:"name"`
+		Argv    []string `json:"argv"`
+		Command string   `json:"command"`
+		Corpus  string   `json:"corpus"`
+		Args    []string `json:"args"`
+	}
+	data, err := os.ReadFile(filepath.Join("testdata", "legacy_cli_golden.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []goldenCase
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			got, err := parseInvocation(tc.Argv)
+			if err != nil {
+				t.Fatalf("parseInvocation(%q): %v", tc.Argv, err)
+			}
+			if got.Command != tc.Command || got.Profile.Name != tc.Corpus || !reflect.DeepEqual(got.Args, tc.Args) {
+				t.Fatalf("parseInvocation(%q) = command=%q corpus=%q args=%q, want command=%q corpus=%q args=%q",
+					tc.Argv, got.Command, got.Profile.Name, got.Args, tc.Command, tc.Corpus, tc.Args)
+			}
+		})
+	}
+}
+
+func TestCorpusAwareCLIParsing(t *testing.T) {
+	for _, tc := range []struct {
+		argv []string
+		args []string
+	}{
+		{[]string{"add", "--corpus", "ai", "note", "body", "title", "tags"}, []string{"note", "body", "title", "tags"}},
+		{[]string{"search", "--corpus=ai", "transformers", "10"}, []string{"transformers", "10"}},
+		{[]string{"list", "--corpus", "ai", "20"}, []string{"20"}},
+		{[]string{"pending", "--corpus", "ai"}, []string{}},
+	} {
+		got, err := parseInvocation(tc.argv)
+		if err != nil {
+			t.Fatalf("parseInvocation(%q): %v", tc.argv, err)
+		}
+		if got.Profile.Name != "ai" || !reflect.DeepEqual(got.Args, tc.args) {
+			t.Errorf("parseInvocation(%q) = corpus=%q args=%q, want ai %q", tc.argv, got.Profile.Name, got.Args, tc.args)
+		}
+	}
+}
+
+func TestCorpusCLIRejectsUnsafeTargetsAndLateFlags(t *testing.T) {
+	for _, argv := range [][]string{
+		{"add", "--corpus", "both", "note", "body"},
+		{"search", "--corpus", "/tmp/other.db", "query"},
+		{"add", "note", "body", "--corpus", "ai"},
+		{"ask", "--corpus", "ai", "question"},
+		{"list", "--corpus", "ai", "--corpus", "homelab", "1"},
+		{"add", "--corpus=ai", "--corpus=homelab", "note", "body"},
+	} {
+		if _, err := parseInvocation(argv); err == nil {
+			t.Errorf("parseInvocation(%q) unexpectedly succeeded", argv)
+		}
+	}
+}
+
+func TestCorpusProfilesArePhysicallySeparated(t *testing.T) {
+	homelab, err := corpusProfile("homelab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ai, err := corpusProfile("ai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if homelab.DBPath == ai.DBPath || homelab.RawRoot == ai.RawRoot || homelab.ChromaCollection == ai.ChromaCollection ||
+		homelab.QuarantineDir == ai.QuarantineDir || homelab.QuarantineLog == ai.QuarantineLog ||
+		homelab.WatcherLock == ai.WatcherLock || homelab.WatcherState == ai.WatcherState {
+		t.Fatalf("corpus profiles share a storage, quarantine, collection, lock, or state target: homelab=%+v ai=%+v", homelab, ai)
+	}
+	if ai.WikiIndexPath != "" {
+		t.Fatalf("AI corpus unexpectedly has a generated wiki index: %q", ai.WikiIndexPath)
+	}
+	if _, err := corpusProfile("both"); err == nil {
+		t.Fatal("non-allowlisted corpus unexpectedly resolved")
+	}
+}
 
 func TestSlugify(t *testing.T) {
 	cases := []struct {

@@ -1,0 +1,13 @@
+[
+  {"name":"ask words","argv":["ask","how","does","NFS","work?"],"command":"ask","corpus":"homelab","args":["how","does","NFS","work?"]},
+  {"name":"ask leading dash","argv":["ask","--help"],"command":"ask","corpus":"homelab","args":["--help"]},
+  {"name":"add note","argv":["add","note","Docker tip","Use restart: always","docker,tips"],"command":"add","corpus":"homelab","args":["note","Docker tip","Use restart: always","docker,tips"]},
+  {"name":"add note stdin","argv":["add","note","-","My Note","tag1"],"command":"add","corpus":"homelab","args":["note","-","My Note","tag1"]},
+  {"name":"add url","argv":["add","url","https://example.com","Interesting article","bookmarks"],"command":"add","corpus":"homelab","args":["url","https://example.com","Interesting article","bookmarks"]},
+  {"name":"list default","argv":["list"],"command":"list","corpus":"homelab","args":[]},
+  {"name":"list limit","argv":["list","10"],"command":"list","corpus":"homelab","args":["10"]},
+  {"name":"search default","argv":["search","docker"],"command":"search","corpus":"homelab","args":["docker"]},
+  {"name":"search leading dash","argv":["search","-h"],"command":"search","corpus":"homelab","args":["-h"]},
+  {"name":"search limit","argv":["search","docker nginx","5"],"command":"search","corpus":"homelab","args":["docker nginx","5"]},
+  {"name":"pending","argv":["pending"],"command":"pending","corpus":"homelab","args":[]}
+]

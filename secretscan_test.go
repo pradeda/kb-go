@@ -1,13 +1,42 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
+func TestSanitizeWriteFailsClosedWithoutCorpusRules(t *testing.T) {
+	profile, err := corpusProfile("ai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.SecretPatternsPath = filepath.Join(t.TempDir(), "missing-rules.json")
+	if _, _, _, err := sanitizeWrite(profile, "secret content", "title"); err == nil {
+		t.Fatal("sanitizeWrite unexpectedly succeeded without corpus rules")
+	}
+}
+
+func TestLoadSecretRulesRejectsSemanticallyEmptyConfig(t *testing.T) {
+	for _, body := range []string{`{}`, `{"version":1,"patterns":[]}`} {
+		path := filepath.Join(t.TempDir(), "rules.json")
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadSecretRules(path); err == nil {
+			t.Fatalf("loadSecretRules unexpectedly accepted %s", body)
+		}
+	}
+}
+
 func mustRules(t *testing.T) *SecretRules {
 	t.Helper()
-	r, err := loadSecretRules(secretPatternsPath)
+	profile, profileErr := corpusProfile(defaultCorpus)
+	if profileErr != nil {
+		t.Fatal(profileErr)
+	}
+	r, err := loadSecretRules(profile.SecretPatternsPath)
 	if err != nil {
 		t.Skipf("secret rules not available (%v)", err)
 	}

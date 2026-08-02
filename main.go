@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,14 +24,6 @@ import (
 )
 
 const (
-	dbPath        = "/opt/kb/kb.db"
-	sqliteDSN     = dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on"
-	rawDir        = "/opt/kb/raw"
-	wikiIndex     = "/opt/kb/wiki/index.md"
-
-	secretPatternsPath = "/opt/kb/secret_patterns.json"
-	quarantineDir      = "/opt/kb/quarantine"
-	quarantineLog      = "/opt/kb/quarantine.log"
 	openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
 	defaultModel  = "google/gemini-2.5-flash-lite"
 	kbSearchAPI   = "http://192.168.1.174:8050/kb/search"
@@ -52,32 +45,103 @@ type Result struct {
 	Score   float64
 }
 
+type commandInvocation struct {
+	Command string
+	Args    []string
+	Profile CorpusProfile
+}
+
+type singleCorpusFlag struct {
+	value *string
+	set   bool
+}
+
+func (f *singleCorpusFlag) String() string {
+	if f == nil || f.value == nil {
+		return defaultCorpus
+	}
+	return *f.value
+}
+
+func (f *singleCorpusFlag) Set(value string) error {
+	if f.set {
+		return errors.New("--corpus may be specified only once")
+	}
+	f.set = true
+	*f.value = value
+	return nil
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	loadEnv("/opt/kb/.env")
-
-	if len(os.Args) < 2 {
+	invocation, err := parseInvocation(os.Args[1:])
+	if err != nil {
+		if err.Error() != "usage" {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		printUsage()
 		os.Exit(1)
 	}
+	loadEnv(invocation.Profile.EnvFile)
 
-	switch os.Args[1] {
+	switch invocation.Command {
 	case "ask":
-		cmdAsk(ctx)
+		cmdAsk(ctx, invocation.Args, invocation.Profile)
 	case "add":
-		cmdAdd(ctx)
+		cmdAdd(ctx, invocation.Args, invocation.Profile)
 	case "list":
-		cmdList(ctx)
+		cmdList(ctx, invocation.Args, invocation.Profile)
 	case "search":
-		cmdSearch(ctx)
+		cmdSearch(ctx, invocation.Args, invocation.Profile)
 	case "pending":
-		cmdPending(ctx)
-	default:
-		printUsage()
-		os.Exit(1)
+		cmdPending(ctx, invocation.Profile)
 	}
+}
+
+func parseInvocation(args []string) (commandInvocation, error) {
+	if len(args) == 0 {
+		return commandInvocation{}, errors.New("usage")
+	}
+
+	command := args[0]
+	switch command {
+	case "ask", "add", "list", "search", "pending":
+	default:
+		return commandInvocation{}, fmt.Errorf("unknown command %q", command)
+	}
+
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	corpusName := defaultCorpus
+	if command != "ask" {
+		fs.Var(&singleCorpusFlag{value: &corpusName}, "corpus", "target corpus (homelab or ai)")
+	}
+	commandArgs := args[1:]
+	flagArgs := []string{}
+	if command != "ask" && len(commandArgs) > 0 &&
+		(commandArgs[0] == "--corpus" || strings.HasPrefix(commandArgs[0], "--corpus=")) {
+		flagArgs = commandArgs
+	}
+	if err := fs.Parse(flagArgs); err != nil {
+		return commandInvocation{}, err
+	}
+	positionalArgs := commandArgs
+	if len(flagArgs) > 0 {
+		positionalArgs = fs.Args()
+	}
+	for _, arg := range positionalArgs {
+		if arg == "--corpus" || strings.HasPrefix(arg, "--corpus=") {
+			return commandInvocation{}, errors.New("--corpus must appear immediately after the command")
+		}
+	}
+
+	profile, err := corpusProfile(corpusName)
+	if err != nil {
+		return commandInvocation{}, err
+	}
+	return commandInvocation{Command: command, Args: positionalArgs, Profile: profile}, nil
 }
 
 func printUsage() {
@@ -85,12 +149,12 @@ func printUsage() {
 
 Commands:
   ask "question"                 Semantic search + LLM synthesis
-  add note "content" "title" "tags"   Add a note (tags comma-separated, optional)
-  add note - "title" "tags"           Add a note from stdin
-  add url "url" "title" "tags"        Add a URL bookmark
-  list [limit]                   List recent entries (default 20)
-  search "query" [limit]         Full-text search via FTS5 (default 20)
-  pending                        List entries not yet compiled
+  add [--corpus homelab|ai] note "content" "title" "tags"
+  add [--corpus homelab|ai] note - "title" "tags"   Add from stdin
+  add [--corpus homelab|ai] url "url" "title" "tags"
+  list [--corpus homelab|ai] [limit]                  List entries
+  search [--corpus homelab|ai] "query" [limit]        FTS5 search
+  pending [--corpus homelab|ai]                       Pending entries
 
 Examples:
   kb ask "how does NFS work in the homelab?"
@@ -101,20 +165,21 @@ Examples:
   kb add url "https://example.com" "Interesting article" "bookmarks"
   kb list 10
   kb search "docker"
+  kb search --corpus ai "transformers" 10
   kb pending`)
 }
 
 // ─── ask ──────────────────────────────────────────────────────────────────────
 
-func cmdAsk(ctx context.Context) {
+func cmdAsk(ctx context.Context, args []string, profile CorpusProfile) {
 	start := time.Now()
 
-	if len(os.Args) < 3 {
+	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "Usage: kb ask \"question\"")
 		os.Exit(1)
 	}
 
-	query := strings.Join(os.Args[2:], " ")
+	query := strings.Join(args, " ")
 
 	results, err := searchViaAPI(ctx, query, start)
 	if err != nil {
@@ -138,7 +203,7 @@ func cmdAsk(ctx context.Context) {
 		fmt.Fprintf(os.Stderr, "--- DEBUG: Context ---\n%s\n--- END DEBUG ---\n", context)
 	}
 
-	indexData, err := os.ReadFile(wikiIndex)
+	indexData, err := os.ReadFile(profile.WikiIndexPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%v] warn: wiki index missing (%v)\n",
 			time.Since(start).Round(time.Millisecond), err)
@@ -183,8 +248,8 @@ Wiki index (for orientation only, not for direct answers):
 
 // ─── add ──────────────────────────────────────────────────────────────────────
 
-func cmdAdd(ctx context.Context) {
-	if len(os.Args) < 3 {
+func cmdAdd(ctx context.Context, args []string, profile CorpusProfile) {
+	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "Usage: kb add <note|url> ...")
 		fmt.Fprintln(os.Stderr, "  kb add note \"content\" \"title\" \"tags\"")
 		fmt.Fprintln(os.Stderr, "  kb add note - \"title\" \"tags\"  (read content from stdin)")
@@ -197,7 +262,7 @@ func cmdAdd(ctx context.Context) {
 		os.Exit(1)
 	}
 
-	entryType := os.Args[2]
+	entryType := args[0]
 	if entryType != "note" && entryType != "url" {
 		fmt.Fprintf(os.Stderr, "Invalid type: %s (must be 'note' or 'url')\n", entryType)
 		os.Exit(1)
@@ -205,12 +270,12 @@ func cmdAdd(ctx context.Context) {
 
 	var content, title, tags string
 
-	if entryType == "note" && len(os.Args) > 3 && os.Args[3] == "-" {
-		if len(os.Args) >= 5 {
-			title = os.Args[4]
+	if entryType == "note" && len(args) > 1 && args[1] == "-" {
+		if len(args) >= 3 {
+			title = args[2]
 		}
-		if len(os.Args) >= 6 {
-			tags = os.Args[5]
+		if len(args) >= 4 {
+			tags = args[3]
 		}
 		stdinBytes, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -223,29 +288,27 @@ func cmdAdd(ctx context.Context) {
 			os.Exit(1)
 		}
 	} else {
-		if len(os.Args) < 4 {
+		if len(args) < 2 {
 			fmt.Fprintf(os.Stderr, "Error: content is required for %s\n", entryType)
 			os.Exit(1)
 		}
-		content = os.Args[3]
-		if len(os.Args) >= 5 {
-			title = os.Args[4]
+		content = args[1]
+		if len(args) >= 3 {
+			title = args[2]
 		}
-		if len(os.Args) >= 6 {
-			tags = os.Args[5]
+		if len(args) >= 4 {
+			tags = args[3]
 		}
 	}
 
 	// Gate 1: redact secrets before content reaches SQLite/FTS or the raw file.
 	origContent := content
 	var scanHits []scanHit
-	if rules, rerr := loadSecretRules(secretPatternsPath); rerr != nil {
-		fmt.Fprintf(os.Stderr, "warn: secret scanner disabled (%v)\n", rerr)
-	} else {
-		content, scanHits = rules.Sanitize(content)
-		if title != "" {
-			title, _ = rules.Sanitize(title)
-		}
+	var rerr error
+	content, title, scanHits, rerr = sanitizeWrite(profile, content, title)
+	if rerr != nil {
+		fmt.Fprintf(os.Stderr, "Error: secret scanner unavailable for corpus %s: %v\n", profile.Name, rerr)
+		os.Exit(1)
 	}
 
 	if title == "" {
@@ -264,7 +327,7 @@ func cmdAdd(ctx context.Context) {
 	}
 
 	if len(scanHits) > 0 {
-		backup := recordQuarantine(origContent, content, "cli", slug, scanHits)
+		backup := recordQuarantine(profile, origContent, content, "cli", slug, scanHits)
 		names := make([]string, 0, len(scanHits))
 		for _, h := range scanHits {
 			names = append(names, h.Pattern+"("+h.Action+")")
@@ -281,7 +344,7 @@ func cmdAdd(ctx context.Context) {
 		subdir = "urls"
 	}
 
-	rawSubdir := fmt.Sprintf("%s/%s", rawDir, subdir)
+	rawSubdir := fmt.Sprintf("%s/%s", profile.RawRoot, subdir)
 	if err := os.MkdirAll(rawSubdir, 0700); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating directory: %v\n", err)
 		os.Exit(1)
@@ -306,7 +369,7 @@ saved: %s
 		os.Exit(1)
 	}
 
-	db, err := openDB()
+	db, err := openDB(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		if rmErr := os.Remove(rawPath); rmErr != nil {
@@ -338,15 +401,15 @@ saved: %s
 
 // ─── list ─────────────────────────────────────────────────────────────────────
 
-func cmdList(ctx context.Context) {
+func cmdList(ctx context.Context, args []string, profile CorpusProfile) {
 	limit := 20
-	if len(os.Args) >= 3 {
-		if n, err := strconv.Atoi(os.Args[2]); err == nil && n > 0 {
+	if len(args) >= 1 {
+		if n, err := strconv.Atoi(args[0]); err == nil && n > 0 {
 			limit = n
 		}
 	}
 
-	db, err := openDB()
+	db, err := openDB(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
@@ -382,26 +445,26 @@ func cmdList(ctx context.Context) {
 
 // ─── search ───────────────────────────────────────────────────────────────────
 
-func cmdSearch(ctx context.Context) {
-	if len(os.Args) < 3 {
+func cmdSearch(ctx context.Context, args []string, profile CorpusProfile) {
+	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "Usage: kb search \"query\" [limit]")
 		os.Exit(1)
 	}
 
-	query := parseFTSQuery(os.Args[2])
+	query := parseFTSQuery(args[0])
 	if query == "" {
 		fmt.Fprintln(os.Stderr, "Error: empty search query")
 		os.Exit(1)
 	}
 
 	limit := 20
-	if len(os.Args) >= 4 {
-		if n, err := strconv.Atoi(os.Args[3]); err == nil && n > 0 {
+	if len(args) >= 2 {
+		if n, err := strconv.Atoi(args[1]); err == nil && n > 0 {
 			limit = n
 		}
 	}
 
-	db, err := openDB()
+	db, err := openDB(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
@@ -451,8 +514,8 @@ func cmdSearch(ctx context.Context) {
 
 // ─── pending ──────────────────────────────────────────────────────────────────
 
-func cmdPending(ctx context.Context) {
-	db, err := openDB()
+func cmdPending(ctx context.Context, profile CorpusProfile) {
+	db, err := openDB(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
@@ -490,7 +553,7 @@ func cmdPending(ctx context.Context) {
 	if count == 0 {
 		fmt.Println("All entries embedded.")
 	} else {
-		fmt.Printf("\n%d entries pending embedding.\nRun: python3 /opt/kb/compile.py\n", count)
+		fmt.Printf("\n%d entries pending embedding.\nRun: %s\n", count, profile.compileCommand())
 	}
 }
 
@@ -646,8 +709,8 @@ func writeRawFileExclusive(dir, prefix string, data []byte) (string, error) {
 }
 
 // openDB opens SQLite with WAL and busy_timeout (prevents "database is locked" errors).
-func openDB() (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", sqliteDSN)
+func openDB(profile CorpusProfile) (*sql.DB, error) {
+	db, err := sql.Open("sqlite3", profile.sqliteDSN())
 	if err != nil {
 		return nil, err
 	}

@@ -2,3 +2,5 @@ kb
 kb-go
 kb-ask
 *.bak-*
+__pycache__/
+*.pyc

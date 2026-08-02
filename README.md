@@ -53,7 +53,8 @@ Layer 4: Threshold 0.40 → cap top 5 (full) / top 3 (websearch)
   - KB Search API at `http://192.168.1.174:8050` (systemd: `kb-search-api`)
   - FastEmbed daemon at `/run/kb-embed/embed.sock`
   - ChromaDB at `localhost:8000`
-  - SQLite DB at `/opt/kb/kb.db`
+  - Homelab SQLite DB at `/opt/kb/kb.db`
+  - AI SQLite DB at `/opt/ai-kb/ai-kb.db`
 
 ## Build
 
@@ -69,6 +70,18 @@ go build -tags fts5 -o kb .
 sudo cp kb /usr/local/bin/kb
 sudo cp compile.py /opt/kb/compile.py
 ```
+
+AI storage provisioning is an explicit, fixed-target operation. It initializes the
+`entries`/FTS5 schema, merge-migrates Homelab collection metadata without dropping
+`hnsw:space=cosine`, and creates `ai_kb_collection`:
+
+```bash
+sudo /usr/bin/python3 provision_storage.py --apply
+/usr/bin/python3 provision_storage.py --health
+```
+
+Run it only after a restore-tested backup. `--health` is read-only and fails on a
+missing collection or corpus/model/dimension/metric mismatch.
 
 ## Usage
 
@@ -108,9 +121,12 @@ EOF
 
 # URL bookmark
 kb add url "https://example.com" "Interesting article" "bookmarks"
+
+# Explicit AI corpus (write target must precede positional arguments)
+kb add --corpus ai note "Transformer note" "Attention overview" "ai,ml"
 ```
 
-After adding entries, the `kb-watcher` systemd service automatically runs `/opt/kb/compile.py`, which embeds them into ChromaDB for semantic search. No manual step needed.
+Legacy commands without `--corpus` remain Homelab-only. The only accepted write targets are `homelab` and `ai`; arbitrary database, raw, or collection paths are not accepted. The separate `kb-watcher` and `ai-kb-watcher` services run the same allowlisted compiler with different raw roots, Chroma collections, locks, and state files.
 
 Raw entries are created atomically (`O_CREATE|O_EXCL`) so concurrent same-title writes cannot overwrite each other. Files use mode `0600` and their directories use `0700` because raw Markdown contains the same potentially sensitive content as `kb.db`.
 
@@ -145,11 +161,12 @@ LLM output file paths in `parse_and_write()` are validated with `resolve()` + `i
 
 ```bash
 sudo cp kb-watcher.service /etc/systemd/system/
+sudo cp ai-kb-watcher.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now kb-watcher
+sudo systemctl enable --now kb-watcher ai-kb-watcher
 ```
 
-Watches `/opt/kb/raw/` via inotify, debounces 5s, runs `compile.py` automatically. No manual step needed.
+The watchers monitor `/opt/kb/raw/` and `/opt/ai-kb/raw/` independently, debounce for 5s, and run `compile.py` for their fixed corpus.
 
 Uses a **blocking** `flock` (not `flock -n`): an event that arrives while a compile is already running waits for its own run instead of being silently dropped — otherwise the entry would stay unembedded (invisible to semantic search) until some future event triggered another compile.
 
@@ -160,6 +177,7 @@ kb search "docker"          # default 20 results
 kb search "nginx" 10        # limit to 10 results
 kb search "192.168.1.174"   # punctuation-safe literal search
 kb search "/opt/kb"         # paths are safe too
+kb search --corpus ai "transformers" 10
 ```
 
 Uses SQLite FTS5. Each whitespace-delimited term is treated as a literal and terms are combined with implicit AND semantics. Advanced FTS operators (`OR`, `NOT`, `*`, and similar syntax) are intentionally not interpreted. Does NOT require ChromaDB or OpenRouter.
@@ -169,17 +187,19 @@ Uses SQLite FTS5. Each whitespace-delimited term is treated as a literal and ter
 ```bash
 kb list           # last 20 entries
 kb list 50        # last 50 entries
+kb list --corpus ai 20
 ```
 
 ### Pending embedding (`kb pending`)
 
 ```bash
 kb pending        # entries not yet embedded in ChromaDB
+kb pending --corpus ai
 ```
 
 ## Config
 
-`/opt/kb/.env`:
+Each corpus has its own private env file (`/opt/kb/.env` and `/opt/ai-kb/.env`):
 ```
 OPENROUTER_API_KEY=sk-or-v1-...
 OPENROUTER_MODEL=google/gemini-2.5-flash-lite
@@ -203,4 +223,4 @@ Run the canonical suite through the Makefile so the SQLite driver is compiled wi
 make test
 ```
 
-This is equivalent to `go test -tags sqlite_fts5 ./...`. Plain `go test ./...` does not enable the FTS5 module and is not the supported test command.
+This runs `go test -tags sqlite_fts5 ./...` plus the compiler, provisioning, metadata, and watcher contract tests. Plain `go test ./...` does not enable the FTS5 module and is not the supported test command.

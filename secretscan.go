@@ -12,7 +12,7 @@ import (
 )
 
 // ─── secret scanner (Gate 1: write-time) ────────────────────────────────────
-// Shared rules with compile.py (Gate 2) via /opt/kb/secret_patterns.json.
+// Each corpus uses its own allowlisted rules file, shared with compile.py Gate 2.
 // RE2-only patterns so Go and Python redact identically.
 
 type SecretPattern struct {
@@ -42,6 +42,19 @@ type scanHit struct {
 	Value   string
 }
 
+func sanitizeWrite(profile CorpusProfile, content, title string) (string, string, []scanHit, error) {
+	rules, err := loadSecretRules(profile.SecretPatternsPath)
+	if err != nil {
+		return "", "", nil, err
+	}
+	cleanedContent, hits := rules.Sanitize(content)
+	cleanedTitle := title
+	if title != "" {
+		cleanedTitle, _ = rules.Sanitize(title)
+	}
+	return cleanedContent, cleanedTitle, hits, nil
+}
+
 func loadSecretRules(path string) (*SecretRules, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -51,10 +64,35 @@ func loadSecretRules(path string) (*SecretRules, error) {
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if r.Version != 1 {
+		return nil, fmt.Errorf("parse %s: unsupported secret rules version %d", path, r.Version)
+	}
+	if len(r.Patterns) == 0 {
+		return nil, fmt.Errorf("parse %s: secret rules must contain at least one pattern", path)
+	}
 	for i := range r.Patterns {
+		pattern := &r.Patterns[i]
+		if pattern.Name == "" || pattern.Regex == "" {
+			return nil, fmt.Errorf("parse %s: pattern %d requires name and regex", path, i)
+		}
+		if pattern.Action != "redact" && pattern.Action != "log" {
+			return nil, fmt.Errorf("parse %s: pattern %q has invalid action %q", path, pattern.Name, pattern.Action)
+		}
+		if pattern.Action == "redact" && pattern.Placeholder == "" {
+			return nil, fmt.Errorf("parse %s: redact pattern %q requires placeholder", path, pattern.Name)
+		}
+		if pattern.CaptureGroup < 0 {
+			return nil, fmt.Errorf("parse %s: pattern %q has negative capture_group", path, pattern.Name)
+		}
 		re, err := regexp.Compile(r.Patterns[i].Regex)
 		if err != nil {
 			return nil, fmt.Errorf("pattern %q: %w", r.Patterns[i].Name, err)
+		}
+		if pattern.CaptureGroup > re.NumSubexp() {
+			return nil, fmt.Errorf(
+				"parse %s: pattern %q capture_group %d exceeds %d groups",
+				path, pattern.Name, pattern.CaptureGroup, re.NumSubexp(),
+			)
 		}
 		r.Patterns[i].re = re
 	}
@@ -152,7 +190,7 @@ func (r *SecretRules) Sanitize(content string) (string, []scanHit) {
 
 // recordQuarantine backs up the original content (when it was mutated) and
 // appends one audit line. No queue, no notification — just a trail.
-func recordQuarantine(orig, cleaned, source, slug string, hits []scanHit) (backupPath string) {
+func recordQuarantine(profile CorpusProfile, orig, cleaned, source, slug string, hits []scanHit) (backupPath string) {
 	ts := time.Now().Format("2006-01-02T15:04:05")
 	names := make([]string, 0, len(hits))
 	for _, h := range hits {
@@ -160,8 +198,8 @@ func recordQuarantine(orig, cleaned, source, slug string, hits []scanHit) (backu
 	}
 
 	if orig != cleaned {
-		if err := os.MkdirAll(quarantineDir, 0700); err == nil {
-			backupPath = filepath.Join(quarantineDir,
+		if err := os.MkdirAll(profile.QuarantineDir, 0700); err == nil {
+			backupPath = filepath.Join(profile.QuarantineDir,
 				fmt.Sprintf("%s-%s.orig", time.Now().Format("20060102-150405"), slug))
 			if err := os.WriteFile(backupPath, []byte(orig), 0600); err != nil {
 				fmt.Fprintf(os.Stderr, "warn: quarantine backup failed: %v\n", err)
@@ -172,7 +210,7 @@ func recordQuarantine(orig, cleaned, source, slug string, hits []scanHit) (backu
 
 	line := fmt.Sprintf("%s source=%s hits=%s backup=%s\n",
 		ts, source, strings.Join(names, ","), backupPath)
-	if f, err := os.OpenFile(quarantineLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); err == nil {
+	if f, err := os.OpenFile(profile.QuarantineLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); err == nil {
 		f.WriteString(line)
 		f.Close()
 	}

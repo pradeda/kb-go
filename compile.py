@@ -1,43 +1,98 @@
 #!/usr/bin/env python3
 # /opt/kb/compile.py
 
-import sqlite3, os, re, sys, json
+import argparse
+import sqlite3, os, re, json
 from datetime import datetime
 from pathlib import Path
 
 # --- configuration ---
-KB          = Path("/opt/kb")
-DB          = KB / "kb.db"
-WIKI        = KB / "wiki"
-RAW         = KB / "raw"
-PROMPT_FILE = KB / "prompts" / "compiler.md"
-ENV_FILE    = KB / ".env"
+CORPUS_PROFILES = {
+    "homelab": {
+        "root": "/opt/kb",
+        "db": "/opt/kb/kb.db",
+        "raw": "/opt/kb/raw",
+        "env": "/opt/kb/.env",
+        "collection": "kb_collection",
+        "wiki_index": "/opt/kb/wiki/index.md",
+        "secret_patterns": "/opt/kb/secret_patterns.json",
+        "quarantine_dir": "/opt/kb/quarantine",
+        "quarantine_log": "/opt/kb/quarantine.log",
+        "watcher_lock": "/tmp/kb-watcher.lock",
+        "watcher_state": "/tmp/kb-watcher-last",
+    },
+    "ai": {
+        "root": "/opt/ai-kb",
+        "db": "/opt/ai-kb/ai-kb.db",
+        "raw": "/opt/ai-kb/raw",
+        "env": "/opt/ai-kb/.env",
+        "collection": "ai_kb_collection",
+        "wiki_index": "",
+        "secret_patterns": "/opt/ai-kb/secret_patterns.json",
+        "quarantine_dir": "/opt/ai-kb/quarantine",
+        "quarantine_log": "/opt/ai-kb/quarantine.log",
+        "watcher_lock": "/tmp/ai-kb-watcher.lock",
+        "watcher_state": "/tmp/ai-kb-watcher-last",
+    },
+}
+
+KB = DB = WIKI = RAW = PROMPT_FILE = ENV_FILE = None
+SECRET_PATTERNS_FILE = QUARANTINE_DIR = QUARANTINE_LOG = None
+CHROMA_COLLECTION = None
+ACTIVE_CORPUS = None
 
 OPENROUTER_MODEL  = "google/gemini-2.0-flash-lite-001"
 EMBED_MODEL       = "nomic-ai/nomic-embed-text-v1.5"
 CHROMA_HOST       = "localhost"
 CHROMA_PORT       = 8000
-CHROMA_COLLECTION = "kb_collection"
 BATCH_SIZE        = 5
 MAX_TOKENS        = 16000
+EMBEDDING_DIMENSION = 768
+COLLECTION_SCHEMA_VERSION = 1
 
-# Gate 2: secret scanner — shared rules with kb-go via secret_patterns.json
-SECRET_PATTERNS_FILE = KB / "secret_patterns.json"
-QUARANTINE_DIR       = KB / "quarantine"
-QUARANTINE_LOG       = KB / "quarantine.log"
+API_KEY = None
 
-# --- load .env ---
-if ENV_FILE.exists():
+def configure_corpus(name):
+    global ACTIVE_CORPUS, KB, DB, WIKI, RAW, PROMPT_FILE, ENV_FILE
+    global CHROMA_COLLECTION, SECRET_PATTERNS_FILE, QUARANTINE_DIR, QUARANTINE_LOG
+    global _secret_rules
+    try:
+        profile = CORPUS_PROFILES[name]
+    except KeyError as exc:
+        raise ValueError(f"unknown corpus {name!r}") from exc
+    ACTIVE_CORPUS = name
+    KB = Path(profile["root"])
+    DB = Path(profile["db"])
+    RAW = Path(profile["raw"])
+    ENV_FILE = Path(profile["env"])
+    CHROMA_COLLECTION = profile["collection"]
+    WIKI = Path(profile["wiki_index"]).parent if profile["wiki_index"] else None
+    PROMPT_FILE = KB / "prompts" / "compiler.md"
+    SECRET_PATTERNS_FILE = Path(profile["secret_patterns"])
+    QUARANTINE_DIR = Path(profile["quarantine_dir"])
+    QUARANTINE_LOG = Path(profile["quarantine_log"])
+    _secret_rules = None
+    return profile
+
+def load_profile_env():
+    if not ENV_FILE.exists():
+        return
     for line in ENV_FILE.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
-API_KEY = os.environ.get("OPENROUTER_API_KEY")
-if not API_KEY:
-    print("ERROR: OPENROUTER_API_KEY not set in /opt/kb/.env")
-    sys.exit(1)
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Compile one allowlisted KB corpus")
+    parser.add_argument("--corpus", choices=tuple(CORPUS_PROFILES), default="homelab")
+    recovery = parser.add_mutually_exclusive_group()
+    recovery.add_argument("--recover-db", action="store_true")
+    recovery.add_argument("--recover-raw", action="store_true")
+    recovery.add_argument("--health", action="store_true", help="check SQLite and Chroma invariants")
+    return parser.parse_args(argv)
+
+configure_corpus("homelab")
 
 def get_db():
     return sqlite3.connect(str(DB))
@@ -164,10 +219,39 @@ def call_openrouter(system_prompt, user_message):
 def get_chroma_collection():
     import chromadb
     client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-    return client.get_or_create_collection(
-        name=CHROMA_COLLECTION,
-        metadata={"hnsw:space": "cosine"}
-    )
+    collection = client.get_collection(name=CHROMA_COLLECTION)
+    validate_collection_metadata(collection.metadata)
+    validate_collection_configuration(collection.configuration_json)
+    return collection
+
+def validate_collection_metadata(metadata):
+    expected = {
+        "hnsw:space": "cosine",
+        "corpus": ACTIVE_CORPUS,
+        "embedding_model": EMBED_MODEL,
+        "embedding_dimension": EMBEDDING_DIMENSION,
+        "schema_version": COLLECTION_SCHEMA_VERSION,
+    }
+    mismatches = {
+        key: {"expected": value, "actual": (metadata or {}).get(key)}
+        for key, value in expected.items()
+        if (metadata or {}).get(key) != value
+    }
+    if not (metadata or {}).get("created_at"):
+        mismatches["created_at"] = {"expected": "non-empty", "actual": (metadata or {}).get("created_at")}
+    if mismatches:
+        raise RuntimeError(
+            f"{CHROMA_COLLECTION} metadata mismatch for {ACTIVE_CORPUS}: "
+            f"{json.dumps(mismatches, sort_keys=True)}"
+        )
+
+def validate_collection_configuration(configuration):
+    actual_space = ((configuration or {}).get("hnsw") or {}).get("space")
+    if actual_space != "cosine":
+        raise RuntimeError(
+            f"{CHROMA_COLLECTION} configuration mismatch for {ACTIVE_CORPUS}: "
+            f"expected cosine, got {actual_space!r}"
+        )
 
 _embed_model = None
 
@@ -515,16 +599,43 @@ def load_secret_rules():
     try:
         data = json.loads(SECRET_PATTERNS_FILE.read_text(encoding="utf-8"))
     except Exception as e:
-        print(f"  [WARN] secret scanner disabled: {e}")
-        _secret_rules = {"patterns": [], "allow": [], "allow_sub": []}
-        return _secret_rules
+        raise RuntimeError(
+            f"secret scanner unavailable for {ACTIVE_CORPUS}: {SECRET_PATTERNS_FILE}: {e}"
+        ) from e
+    if data.get("version") != 1:
+        raise RuntimeError(
+            f"unsupported secret rules version for {ACTIVE_CORPUS}: {data.get('version')!r}"
+        )
+    raw_patterns = data.get("patterns")
+    if not isinstance(raw_patterns, list) or not raw_patterns:
+        raise RuntimeError(f"secret rules for {ACTIVE_CORPUS} must contain at least one pattern")
     pats = []
-    for p in data.get("patterns", []):
+    for index, p in enumerate(raw_patterns):
+        if not isinstance(p, dict) or not p.get("name") or not p.get("regex"):
+            raise RuntimeError(f"secret pattern {index} for {ACTIVE_CORPUS} requires name and regex")
+        if p.get("action") not in {"redact", "log"}:
+            raise RuntimeError(
+                f"secret pattern {p['name']!r} for {ACTIVE_CORPUS} has invalid action {p.get('action')!r}"
+            )
+        if p["action"] == "redact" and not p.get("placeholder"):
+            raise RuntimeError(
+                f"redact pattern {p['name']!r} for {ACTIVE_CORPUS} requires placeholder"
+            )
+        capture_group = p.get("capture_group")
+        if not isinstance(capture_group, int) or capture_group < 0:
+            raise RuntimeError(
+                f"secret pattern {p['name']!r} for {ACTIVE_CORPUS} has invalid capture_group"
+            )
         try:
             p["_re"] = re.compile(p["regex"])
         except re.error as e:
-            print(f"  [WARN] pattern {p.get('name')}: {e}")
-            continue
+            raise RuntimeError(
+                f"invalid secret pattern {p.get('name')!r} for {ACTIVE_CORPUS}: {e}"
+            ) from e
+        if capture_group > p["_re"].groups:
+            raise RuntimeError(
+                f"secret pattern {p['name']!r} capture_group {capture_group} exceeds {p['_re'].groups} groups"
+            )
         pats.append(p)
     _secret_rules = {
         "patterns": pats,
@@ -624,11 +735,72 @@ def sanitize_unembedded(rows):
     db.close()
     return cleaned
 
-def main():
-    if "--recover-db" in sys.argv:
+def check_health():
+    report = {"corpus": ACTIVE_CORPUS, "sqlite": {}, "chroma": {}}
+    db = get_db()
+    try:
+        integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
+        tables = {row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger')"
+        )}
+        required = {
+            "entries", "entries_fts", "entries_fts_insert",
+            "entries_fts_update", "entries_fts_delete",
+        }
+        missing = sorted(required - tables)
+        all_ids = {str(row[0]) for row in db.execute("SELECT id FROM entries")}
+        embedded_ids = {
+            str(row[0]) for row in db.execute(
+                "SELECT id FROM entries WHERE embedded_at IS NOT NULL"
+            )
+        }
+        report["sqlite"] = {
+            "integrity": integrity,
+            "missing_objects": missing,
+            "entries": len(all_ids),
+            "embedded": len(embedded_ids),
+        }
+        if integrity != "ok" or missing:
+            raise RuntimeError(f"SQLite health failed: {report['sqlite']}")
+    finally:
+        db.close()
+
+    collection = get_chroma_collection()
+    chroma_ids = set(collection.get(include=[])["ids"])
+    missing_vectors = sorted(embedded_ids - chroma_ids)
+    orphan_vectors = sorted(chroma_ids - all_ids)
+    if missing_vectors or orphan_vectors:
+        raise RuntimeError(
+            f"{ACTIVE_CORPUS} SQLite/Chroma ID mismatch: "
+            f"missing={missing_vectors[:20]} orphans={orphan_vectors[:20]}"
+        )
+    report["chroma"] = {
+        "collection": CHROMA_COLLECTION,
+        "count": collection.count(),
+        "metadata": collection.metadata,
+        "missing_vectors": missing_vectors,
+        "orphan_vectors": orphan_vectors,
+    }
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+
+def main(argv=None):
+    global API_KEY
+    args = parse_args(argv)
+    configure_corpus(args.corpus)
+    load_profile_env()
+
+    if args.health:
+        check_health()
+        return
+
+    API_KEY = os.environ.get("OPENROUTER_API_KEY")
+    if not API_KEY:
+        print(f"ERROR: OPENROUTER_API_KEY not set in {ENV_FILE}")
+        raise SystemExit(1)
+    if args.recover_db:
         recover_db_from_raw()
         return
-    if "--recover-raw" in sys.argv:
+    if args.recover_raw:
         recover_raw_from_db()
         return
 
