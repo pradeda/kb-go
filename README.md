@@ -58,6 +58,9 @@ Layer 4: Threshold 0.40 → cap top 5 (full) / top 3 (websearch)
 - External services:
   - KB Search API at `http://192.168.1.174:8050` (systemd: `kb-search-api`)
   - FastEmbed daemon at `/run/kb-embed/embed.sock`
+    - legacy plain-text requests remain `query_embed`
+    - JSON `{"mode":"passage","text":"..."}` requests use `passage_embed`
+      for future-document comparisons such as the AI publish novelty advisory
   - ChromaDB at `localhost:8000`
   - Homelab SQLite DB at `/opt/kb/kb.db`
   - AI SQLite DB at `/opt/ai-kb/ai-kb.db`
