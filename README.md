@@ -194,3 +194,13 @@ OPENROUTER_MODEL=google/gemini-2.5-flash-lite
 | kb-watcher | `/opt/kb/watcher.sh` | systemd: `kb-watcher` |
 | FastEmbed daemon | `/opt/kb/embed_daemon.py` | systemd: `kb-embed` |
 | ChromaDB | Docker: `kb-chromadb` (image pinned, no watchtower) | `:8000` (localhost only) |
+
+## Tests
+
+Run the canonical suite through the Makefile so the SQLite driver is compiled with FTS5 support:
+
+```bash
+make test
+```
+
+This is equivalent to `go test -tags sqlite_fts5 ./...`. Plain `go test ./...` does not enable the FTS5 module and is not the supported test command.
