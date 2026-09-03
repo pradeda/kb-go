@@ -1,0 +1,3 @@
+# Direct roots for runtime/compile.py, runtime/watcher.sh and runtime/embed_daemon.py.
+chromadb==1.5.8
+fastembed==0.8.0

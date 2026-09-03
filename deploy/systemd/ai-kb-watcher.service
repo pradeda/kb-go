@@ -1,0 +1,13 @@
+[Unit]
+Description=AI KB compile watcher
+After=network.target kb-watcher.service
+
+[Service]
+Type=simple
+User=turok
+ExecStart=/opt/kb/watcher.sh --corpus ai
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
