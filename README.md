@@ -112,7 +112,7 @@ kb ask --scope both "compare deployed state with research notes"
 kb ask --alt "how is KB backed up" --alt-lang en "kako se backupuje KB"
 ```
 
-Requires: OpenRouter API key and `KB_V2_TOKEN_KB_CLI_LOCAL` in `/opt/kb/.env`,
+Requires: `KB_V2_TOKEN_KB_CLI_LOCAL` in `/opt/kb/.env`,
 plus KB Search API running on `:8050`. `KB_SEARCH_API_URL` overrides the search API base (default:
 `http://localhost:8050`); set it when the Search API runs on a different host. A trailing
 slash is tolerated. Calls without `--scope` default to `both`; all calls use
@@ -201,7 +201,7 @@ Patterns are tiered: **value-shaped Tier 1** (provider prefixes like `sk-or-v1-`
 
 > **Gotcha:** do not put `\b` before a secret keyword in the keyword patterns — `_` is a word char, so `\bpassword` fails to match `FOO_PASSWORD` / `SONARR_API_KEY=...`, the most common leak form. Covered by `secretscan_test.go`.
 
-`compile.py` previously also generated wiki pages via OpenRouter LLM synthesis — that step is currently **disabled** (commented out in `main()`) pending future wiki reactivation. Only ChromaDB embedding runs by default.
+`compile.py` handles ChromaDB embedding only. Wiki generation code was removed; existing wiki data and index reading are preserved.
 
 Recovery flags (for disaster scenarios):
 ```bash
@@ -272,11 +272,8 @@ kb pending --corpus ai
 
 ## Config
 
-Each corpus has its own private env file (`/opt/kb/.env` and `/opt/ai-kb/.env`):
-```
-OPENROUTER_API_KEY=sk-or-v1-...
-OPENROUTER_MODEL=google/gemini-2.5-flash-lite
-```
+Each corpus has its own private env file (`/opt/kb/.env` and `/opt/ai-kb/.env`).
+The `kb ask` command requires `OPENROUTER_API_KEY` in the env file (used by the Go CLI for LLM synthesis); `compile.py` (embedding, recovery) does not need it.
 
 ## Related services
 
