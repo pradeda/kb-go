@@ -55,9 +55,11 @@ func cmdAskV2(ctx context.Context, query, alt, altLang, scope string, profile Co
 	}
 	if response.TotalCount == 0 {
 		fmt.Fprintf(os.Stderr, "[%v] KB Search API v2 returned 0 results.\n", time.Since(start).Round(time.Millisecond))
-	} else {
-		fmt.Fprintf(os.Stderr, "[%v] KB Search API v2 — %d grouped results after rerank\n", time.Since(start).Round(time.Millisecond), response.TotalCount)
+		fmt.Println("I couldn't find relevant information in the knowledge base for this query.")
+		fmt.Fprintf(os.Stderr, "[%v] Done.\n", time.Since(start).Round(time.Millisecond))
+		return nil
 	}
+	fmt.Fprintf(os.Stderr, "[%v] KB Search API v2 — %d grouped results after rerank\n", time.Since(start).Round(time.Millisecond), response.TotalCount)
 
 	contextText := formatV2Results(response)
 	if os.Getenv("KB_DEBUG") != "" {

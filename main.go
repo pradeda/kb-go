@@ -54,17 +54,6 @@ func applyKBSearchBase() {
 	kbSearchAPIV2 = base + "/v2/kb/search"
 }
 
-type Result struct {
-	ID      int64
-	Title   string
-	Content string
-	Summary string
-	Tags    string
-	Source  string
-	Date    string
-	Score   float64
-}
-
 type commandInvocation struct {
 	Command string
 	Args    []string
@@ -1056,31 +1045,6 @@ func streamCompletion(ctx context.Context, body io.Reader, start time.Time) erro
 	}
 	fmt.Println()
 	return nil
-}
-
-// ─── formatting ───────────────────────────────────────────────────────────────
-
-func formatResults(results []Result) string {
-	if len(results) == 0 {
-		return "(No relevant KB results found for this query.)"
-	}
-	var sb strings.Builder
-	for _, r := range results {
-		title := r.Title
-		if title == "" {
-			title = "Untitled"
-		}
-		sb.WriteString(fmt.Sprintf("### %s [%s] (%s) — %s\n", title, r.Source, r.Date, relevanceLabel(r.Score)))
-		if r.Summary != "" {
-			sb.WriteString(fmt.Sprintf("Summary: %s\n", r.Summary))
-		}
-		if r.Tags != "" {
-			sb.WriteString(fmt.Sprintf("Tags: %s\n", r.Tags))
-		}
-		sb.WriteString(truncate(r.Content, 3000))
-		sb.WriteString("\n\n---\n\n")
-	}
-	return sb.String()
 }
 
 // relevanceLabel maps a final_score (relevance × decay) to a qualitative band

@@ -36,24 +36,19 @@ CORPUS_PROFILES = {
     },
 }
 
-KB = DB = WIKI = RAW = PROMPT_FILE = ENV_FILE = None
+KB = DB = WIKI = RAW = ENV_FILE = None
 SECRET_PATTERNS_FILE = QUARANTINE_DIR = QUARANTINE_LOG = None
 CHROMA_COLLECTION = None
 ACTIVE_CORPUS = None
 
-OPENROUTER_MODEL  = "google/gemini-2.0-flash-lite-001"
 EMBED_MODEL       = "nomic-ai/nomic-embed-text-v1.5"
 CHROMA_HOST       = "localhost"
 CHROMA_PORT       = 8000
-BATCH_SIZE        = 5
-MAX_TOKENS        = 16000
 EMBEDDING_DIMENSION = 768
 COLLECTION_SCHEMA_VERSION = 1
 
-API_KEY = None
-
 def configure_corpus(name):
-    global ACTIVE_CORPUS, KB, DB, WIKI, RAW, PROMPT_FILE, ENV_FILE
+    global ACTIVE_CORPUS, KB, DB, WIKI, RAW, ENV_FILE
     global CHROMA_COLLECTION, SECRET_PATTERNS_FILE, QUARANTINE_DIR, QUARANTINE_LOG
     global _secret_rules
     try:
@@ -67,7 +62,6 @@ def configure_corpus(name):
     ENV_FILE = Path(profile["env"])
     CHROMA_COLLECTION = profile["collection"]
     WIKI = Path(profile["wiki_index"]).parent if profile["wiki_index"] else None
-    PROMPT_FILE = KB / "prompts" / "compiler.md"
     SECRET_PATTERNS_FILE = Path(profile["secret_patterns"])
     QUARANTINE_DIR = Path(profile["quarantine_dir"])
     QUARANTINE_LOG = Path(profile["quarantine_log"])
@@ -183,11 +177,6 @@ def retire_entry(entry_id, collection=None, db_path=None):
     finally:
         connection.close()
 
-def read_file_safe(path):
-    try:
-        return Path(path).read_text(encoding="utf-8")
-    except Exception:
-        return ""
 
 def encode_frontmatter_value(value):
     """Return a JSON string literal, which is also a valid YAML scalar."""
@@ -282,14 +271,6 @@ def supersede_entry(entry_id, replacement, db_path=None):
             temp_path.unlink(missing_ok=True)
         db.close()
 
-def get_uncompiled():
-    db = get_db()
-    rows = db.execute("""
-        SELECT id, type, content, title, tags, raw_path, created_at
-        FROM entries WHERE compiled_at IS NULL ORDER BY created_at
-    """).fetchall()
-    db.close()
-    return rows
 
 def get_unembedded():
     db = get_db()
@@ -300,13 +281,6 @@ def get_unembedded():
     db.close()
     return rows
 
-def mark_compiled(ids):
-    db = get_db()
-    ph = ",".join("?" * len(ids))
-    db.execute(f"UPDATE entries SET compiled_at=? WHERE id IN ({ph})",
-               [datetime.now().isoformat()] + list(ids))
-    db.commit()
-    db.close()
 
 def mark_embedded(ids):
     db = get_db()
@@ -349,70 +323,6 @@ def record_compile_run():
         return None
     return stamp
 
-def update_metadata_from_file(raw_path):
-    wiki_path = KB / "wiki" / "sources" / Path(raw_path).name
-    if not wiki_path.exists():
-        return
-
-    content = wiki_path.read_text(encoding="utf-8")
-    tags_match = re.search(r"^tags:\s*(.*)$", content, re.MULTILINE)
-    tags = tags_match.group(1).strip() if tags_match else ""
-    
-    summary = ""
-    parts = content.split("---")
-    if len(parts) >= 3:
-        body = parts[2].strip()
-        lines = [l for l in body.split("\n") if l.strip() and not l.strip().startswith("#")]
-        if lines:
-            summary = lines[0][:250].strip()
-
-    db = get_db()
-    try:
-        db.execute("UPDATE entries SET tags=?, summary=? WHERE raw_path=?", (tags, summary, str(raw_path)))
-        db.commit()
-    finally:
-        db.close()
-
-def call_openrouter(system_prompt, user_message):
-    import urllib.request, time
-    encoded = json.dumps({
-        "model": OPENROUTER_MODEL,
-        "max_tokens": MAX_TOKENS,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_message},
-        ],
-    }).encode()
-    last_error = None
-    for attempt in range(3):
-        try:
-            req = urllib.request.Request(
-                "https://openrouter.ai/api/v1/chat/completions",
-                data=encoded,
-                headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                data = json.loads(resp.read())
-            if "error" in data:
-                raise Exception(str(data["error"]))
-            return data["choices"][0]["message"]["content"]
-        except urllib.error.HTTPError as e:
-            last_error = f"HTTP {e.code}"
-            if e.code == 429:
-                wait = 10 * (2 ** attempt)
-                print(f"  [RATE LIMIT] Waiting {wait}s (attempt {attempt+1}/3)...")
-                time.sleep(wait)
-            elif e.code >= 500:
-                time.sleep(5 * (attempt + 1))
-            else:
-                raise
-        except Exception as e:
-            last_error = str(e)
-            if attempt < 2:
-                time.sleep(3)
-    raise Exception(f"OpenRouter failed after 3 attempts: {last_error}")
 
 def get_chroma_collection():
     import chromadb
@@ -463,13 +373,14 @@ def get_embed_model():
 EMBED_BATCH_SIZE = 50
 
 def embed_entries(entries):
-    print(f"\nEmbedding {len(entries)} entries to ChromaDB (FastEmbed batch)...")
+    total = len(entries)
+    print(f"\nEmbedding {total} entries to ChromaDB (FastEmbed batch)...")
     collection = get_chroma_collection()
     model = get_embed_model()
-    has_error = False
+    failed = 0
     successful_ids = []
 
-    for chunk_start in range(0, len(entries), EMBED_BATCH_SIZE):
+    for chunk_start in range(0, total, EMBED_BATCH_SIZE):
         chunk = entries[chunk_start:chunk_start + EMBED_BATCH_SIZE]
         ids, texts, metadatas, filtered_rows = [], [], [], []
 
@@ -510,162 +421,14 @@ def embed_entries(entries):
             successful_ids.extend(ids)
         except Exception as e:
             print(f"  [ERROR] batch {chunk_start}-{chunk_start + len(chunk)}: {e}")
-            has_error = True
+            failed += len(ids)
 
-    return successful_ids
+    print(f"\nEmbed summary: {len(successful_ids)} succeeded, {failed} failed out of {total}")
+    if failed:
+        import sys
+        print("ERROR: some entries failed to embed", file=sys.stderr)
+    return successful_ids, failed
 
-def parse_and_write(response_text):
-    written = []
-
-    # JSON mode: {"files": [{"path": "...", "content": "..."}]}
-    try:
-        data = json.loads(response_text)
-        files = data.get("files", [])
-        if not isinstance(files, list):
-            raise ValueError(f"Expected list, got {type(files)}")
-        for f in files:
-            rel_path = f.get("path", "").strip()
-            content = f.get("content", "").strip()
-            if not rel_path or rel_path == "wiki/index.md":
-                continue
-            full_path = (KB / rel_path).resolve()
-            if not full_path.is_relative_to(KB.resolve()):
-                print(f"  [SKIP] path escape: {rel_path}")
-                continue
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content, encoding="utf-8")
-            written.append(rel_path)
-            print(f"  [OK] {rel_path}")
-        return written
-    except (json.JSONDecodeError, AttributeError, ValueError):
-        pass
-
-    # Fallback: legacy FILE:/=== format
-    blocks = re.split(r"(?=^FILE:\s)", response_text, flags=re.MULTILINE)
-    for block in blocks:
-        m = re.match(r"FILE:\s*(.+?)\n===\n(.*?)\n===", block, re.DOTALL)
-        if not m:
-            continue
-        rel_path = m.group(1).strip()
-        content = m.group(2).strip()
-        if rel_path == "wiki/index.md":
-            continue
-        full_path = (KB / rel_path).resolve()
-        if not full_path.is_relative_to(KB.resolve()):
-            print(f"  [SKIP] path escape: {rel_path}")
-            continue
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(content, encoding="utf-8")
-        written.append(rel_path)
-        print(f"  [OK] {rel_path}")
-    return written
-
-def _extract_concept_desc(file_content):
-    in_def = False
-    for line in file_content.split("\n"):
-        if line.strip() == "## Definition":
-            in_def = True
-            continue
-        if in_def:
-            if line.startswith("## "):
-                break
-            stripped = line.strip()
-            if stripped:
-                return stripped[:150]
-    # Fallback: skip entire frontmatter block (--- to ---), take first meaningful line
-    dash_count = 0
-    for line in file_content.split("\n"):
-        stripped = line.strip()
-        if stripped == "---" and dash_count < 2:
-            dash_count += 1
-            continue
-        if dash_count < 2:
-            continue
-        if stripped and not stripped.startswith("#"):
-            return stripped[:150]
-    return ""
-
-def _insert_into_section(content, section_header, new_line):
-    lines = content.split("\n")
-    in_section = False
-    insert_at = len(lines)
-    for i, line in enumerate(lines):
-        if line.strip() == section_header:
-            in_section = True
-            continue
-        if in_section and line.startswith("## "):
-            insert_at = i
-            break
-    lines.insert(insert_at, new_line)
-    return "\n".join(lines)
-
-def update_index(written_paths):
-    index_path = WIKI / "index.md"
-    content = index_path.read_text(encoding="utf-8")
-    changed = False
-
-    for rel_path in written_paths:
-        full_path = KB / rel_path
-        if not full_path.exists():
-            continue
-        file_content = full_path.read_text(encoding="utf-8")
-        slug = Path(rel_path).stem
-
-        if rel_path.startswith("wiki/sources/"):
-            link = f"[[sources/{slug}]]"
-            if link in content:
-                continue
-            title_m = re.search(r"^title:\s*(.+)$", file_content, re.MULTILINE)
-            saved_m = re.search(r"^saved:\s*(\d{4}-\d{2}-\d{2})", file_content, re.MULTILINE)
-            title = title_m.group(1).strip() if title_m else slug
-            date = saved_m.group(1) if saved_m else ""
-            content = _insert_into_section(content, "## Sources", f"- {link} — {title}, {date}")
-            changed = True
-
-        elif rel_path.startswith("wiki/concepts/"):
-            link = f"[[concepts/{slug}]]"
-            if link in content:
-                continue
-            desc = _extract_concept_desc(file_content)
-            content = _insert_into_section(content, "## Concepts", f"- {link} — {desc}")
-            changed = True
-
-    if changed:
-        today = datetime.now().strftime("%Y-%m-%d")
-        content = re.sub(r"^(Last modified|Poslednja izmena):.*$", f"Last modified: {today}", content, flags=re.MULTILINE)
-        index_path.write_text(content, encoding="utf-8")
-        print(f"  [OK] wiki/index.md (programmatic)")
-
-def compile_entries(entries):
-    print(f"\nCompiling {len(entries)} entries...")
-    system_prompt = PROMPT_FILE.read_text(encoding="utf-8")
-    all_compiled = []
-
-    for i in range(0, len(entries), BATCH_SIZE):
-        batch = entries[i:i + BATCH_SIZE]
-        print(f"\n  Batch {i//BATCH_SIZE + 1}...")
-
-        try:
-            existing_concepts = sorted(p.stem for p in (WIKI / "concepts").glob("*.md"))
-            user_msg = (
-                "NOTE: Do not generate FILE: wiki/index.md — it is updated automatically.\n"
-                f"Existing concepts: {', '.join(existing_concepts)}\n\n"
-                "Entries:\n" +
-                "".join([f"=== {r[5]} ===\n{read_file_safe(r[5]) if r[5] else r[2]}" for r in batch])
-            )
-            response = call_openrouter(system_prompt, user_msg)
-            written = parse_and_write(response)
-            if written:
-                all_compiled += [row[0] for row in batch]
-                for row in batch:
-                    if row[5]: update_metadata_from_file(row[5])
-                update_index(written)
-        except Exception as e:
-            import traceback
-            print(f"  ERROR: {e}")
-            traceback.print_exc()
-            continue
-    return all_compiled
 
 def recover_db_from_raw():
     """Parse all raw .md files and rebuild SQLite database."""
@@ -982,7 +745,6 @@ def check_health():
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
 
 def main(argv=None):
-    global API_KEY
     args = parse_args(argv)
     configure_corpus(args.corpus)
     load_profile_env()
@@ -1000,10 +762,6 @@ def main(argv=None):
     if args.supersede is not None:
         supersede_report = supersede_entry(args.supersede, args.replacement)
 
-    API_KEY = os.environ.get("OPENROUTER_API_KEY")
-    if not API_KEY:
-        print(f"ERROR: OPENROUTER_API_KEY not set in {ENV_FILE}")
-        raise SystemExit(1)
     if args.recover_db:
         recover_db_from_raw()
         return
@@ -1011,25 +769,20 @@ def main(argv=None):
         recover_raw_from_db()
         return
 
-    # Wiki generation disabled — not in use. Kept for future reactivation.
-    # uncompiled = get_uncompiled()
-    # if uncompiled:
-    #     compiled_ids = compile_entries(uncompiled)
-    #     if compiled_ids: mark_compiled(compiled_ids)
-
+    embed_failed = 0
     unembedded = get_unembedded()
     if unembedded:
         unembedded = sanitize_unembedded(unembedded)
-        embedded_ids = embed_entries(unembedded)
+        embedded_ids, embed_failed = embed_entries(unembedded)
         if embedded_ids:
             mark_embedded(embedded_ids)
     if supersede_report is not None:
         print(json.dumps(supersede_report, ensure_ascii=False, sort_keys=True))
 
-    # Outside the `if`: an idle pass is exactly the one worth recording, since a
-    # timestamp that only moves when work happens cannot distinguish an idle
-    # compiler from a dead one.
     record_compile_run()
+
+    if embed_failed:
+        raise SystemExit(1)
 
 if __name__ == "__main__":
     main()
