@@ -2,7 +2,7 @@
 
 Homelab knowledge base CLI — semantic search, note management, and full-text search backed by KB Search API, ChromaDB, SQLite (FTS5), and FastEmbed.
 
-> **Depends on:** [kb-mcp](https://github.com/pradeda/kb-mcp) — provides the KB Search API (`kb_search_api.py`) that `kb ask` calls for retrieval + cross-encoder reranking.
+> **Depends on:** [kb](https://github.com/pradeda/kb) — the Python search backend providing KB Search API (`kb_v2.py`), MCP server, ChromaDB embed daemon, FTS5 hybrid retrieval, and mMARCO cross-encoder reranking.
 
 ## Architecture
 
