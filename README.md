@@ -57,9 +57,9 @@ Layer 4: Threshold 0.40 → cap top 5 (full) / top 3 (websearch)
 - Python 3.13 runtime environments built from the owned lock files:
   - `/opt/kb/venv-embed` from `requirements/embed.lock` — `chromadb` and
     `fastembed` for `compile.py`, both watchers, and `kb-embed`
-  - `/opt/kb/venv-search` from the kb-mcp search lock — Search API and its
+  - `/opt/kb/venv-search` from the kb search lock — Search API and its
     CPU-only cross-encoder stack
-  - `/opt/kb/venv` from the kb-mcp MCP lock — MCP transports
+  - `/opt/kb/venv` from the kb MCP lock — MCP transports
 - Every venv must have `include-system-site-packages = false`; KB runtime imports
   must never resolve through `~/.local`
 - SQLite with FTS5 support (`go build -tags fts5`)
