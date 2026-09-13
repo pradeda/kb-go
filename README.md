@@ -243,6 +243,43 @@ interpreter change must be deployed and verified for both watchers together.
 
 Uses a **blocking** `flock` (not `flock -n`): an event that arrives while a compile is already running waits for its own run instead of being silently dropped — otherwise the entry would stay unembedded (invisible to semantic search) until some future event triggered another compile.
 
+### KB Atlas
+
+Static visual overview of both corpora (`http://192.168.1.174:3085`), regenerated daily at 06:30. Zero LLM calls — pure geometry over the vectors that already exist in ChromaDB.
+
+```
+ChromaDB (kb_collection + ai_kb_collection) + SQLite (read-only, mode=ro)
+  → cosine distance matrix → classical MDS 768D→2D
+  → k-means++ clusters (fixed seed, reproducible)
+  → self-contained HTML written atomically to /opt/kb/atlas/index.html
+```
+
+Files (source in this repo, deployed by `make install`):
+
+| Repo file | Deploys to | Role |
+|-----------|------------|------|
+| `runtime/kb_atlas.py` | `/opt/kb/kb_atlas.py` (0755) | generator; runs on `venv-embed` (needs `numpy` + `chromadb`) |
+| `runtime/atlas_template.html` | `/opt/kb/atlas_template.html` (0644) | HTML template with one `__ATLAS_DATA__` placeholder |
+
+The template is resolved relative to `__file__`, so the generator works from the repo and from `/opt/kb` unchanged. The shebang is `/opt/kb/venv-embed/bin/python` — never `python3` (system interpreter has no `chromadb`).
+
+Serving and regeneration are deliberately split. All three are **user** units (deployed to `~/.config/systemd/user/`, unlike the system units above):
+
+```bash
+# From-scratch setup
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/kb-atlas*.service deploy/systemd/kb-atlas-rebuild.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now kb-atlas.service kb-atlas-rebuild.timer
+
+# Manual rebuild + verification (same path the daily timer takes)
+systemctl --user start kb-atlas-rebuild.service
+systemctl --user status kb-atlas-rebuild.service   # expect exit 0
+curl -s http://192.168.1.174:3085/ | head -c 200    # generated page answers
+```
+
+Thresholds (`REDUNDANCY_MAX = 0.08`, `ISOLATED_MIN = 0.28`) were derived from the measured distribution over the Homelab corpus and will need recalibration as the AI corpus grows; the contract test enforces only their ordering, not the values.
+
 ### Full-text search (`kb search`)
 
 ```bash
@@ -283,6 +320,7 @@ The `kb ask` command requires `OPENROUTER_API_KEY` in the env file (used by the 
 | MCP server | `/opt/kb/venv/bin/python3 /opt/kb/mcp_server.py` | system units `kb-mcp-sse` / `kb-mcp-http`; stdio clients |
 | KB watchers | `/opt/kb/watcher.sh` → `/opt/kb/venv-embed/bin/python` | system units `kb-watcher` / `ai-kb-watcher` |
 | FastEmbed daemon | `/opt/kb/venv-embed/bin/python /opt/kb/embed_daemon.py` | system unit `kb-embed` |
+| KB Atlas | `/opt/kb/venv-embed/bin/python /opt/kb/kb_atlas.py` | `:3085` (user units `kb-atlas` / `kb-atlas-rebuild.timer`) |
 | ChromaDB | Docker: `kb-chromadb` (image pinned, no watchtower) | `:8000` (localhost only) |
 
 ## Tests
@@ -293,7 +331,7 @@ Run the canonical suite through the Makefile so the SQLite driver is compiled wi
 make test
 ```
 
-This runs `go test -tags sqlite_fts5 ./...` plus the compiler, provisioning, metadata, and watcher contract tests. Plain `go test ./...` does not enable the FTS5 module and is not the supported test command.
+This runs `go test -tags sqlite_fts5 ./...` plus the compiler, provisioning, metadata, watcher, and Atlas template/JS contract tests. Plain `go test ./...` does not enable the FTS5 module and is not the supported test command.
 
 Python and shell fixtures live under `tests/`; deployable helpers live under
 `runtime/`, static runtime inputs under `config/`, and unit files under

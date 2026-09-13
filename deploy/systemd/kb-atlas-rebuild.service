@@ -1,0 +1,9 @@
+[Unit]
+Description=Regenerise KB Atlas iz Chrome i SQLite-a
+Documentation=file:/opt/kb/kb_atlas.py
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/kb/venv-embed/bin/python /opt/kb/kb_atlas.py
+TimeoutStartSec=5min

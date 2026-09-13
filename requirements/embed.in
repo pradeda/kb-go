@@ -1,3 +1,5 @@
-# Direct roots for runtime/compile.py, runtime/watcher.sh and runtime/embed_daemon.py.
+# Direct roots for runtime/compile.py, runtime/watcher.sh, runtime/embed_daemon.py
+# and runtime/kb_atlas.py.
 chromadb==1.5.8
 fastembed==0.8.0
+numpy==2.5.2

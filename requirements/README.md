@@ -11,3 +11,7 @@ uv pip sync --python /opt/kb/venv-embed/bin/python requirements/embed.lock
 
 The venv must have `include-system-site-packages = false`. Verify imports with
 `python -s`; no path may resolve under `~/.local`.
+
+Consumers: `compile.py`, `watcher.sh`, `embed_daemon.py`, and `kb_atlas.py`
+(the Atlas generator needs `numpy` + `chromadb` from this venv — its shebang
+points here, and the daily `kb-atlas-rebuild.timer` runs it directly).

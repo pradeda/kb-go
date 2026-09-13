@@ -5,6 +5,8 @@ COMPILE  = /opt/kb/compile.py
 PATTERNS = /opt/kb/secret_patterns.json
 DAEMON   = /opt/kb/embed_daemon.py
 REFRESH  = /opt/kb/refresh_volatile.sh
+ATLAS    = /opt/kb/kb_atlas.py
+TEMPLATE = /opt/kb/atlas_template.html
 RUNTIME  = runtime
 CONFIG   = config
 BUILD    = go build -tags fts5 -o $(BINARY) .
@@ -26,5 +28,7 @@ install: build
 	sudo cp $(CONFIG)/secret_patterns.json $(PATTERNS)
 	sudo install -m 0644 $(RUNTIME)/embed_daemon.py $(DAEMON)
 	sudo install -m 0755 $(RUNTIME)/refresh_volatile.sh $(REFRESH)
+	sudo install -m 0755 $(RUNTIME)/kb_atlas.py $(ATLAS)
+	sudo install -m 0644 $(RUNTIME)/atlas_template.html $(TEMPLATE)
 
 .PHONY: build test install

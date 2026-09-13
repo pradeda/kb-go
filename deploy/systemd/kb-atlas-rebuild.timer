@@ -1,0 +1,11 @@
+[Unit]
+Description=Dnevna regeneracija KB Atlasa u 06:30
+
+[Timer]
+OnCalendar=*-*-* 06:30:00
+Persistent=true
+AccuracySec=5min
+Unit=kb-atlas-rebuild.service
+
+[Install]
+WantedBy=timers.target
