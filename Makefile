@@ -2,6 +2,7 @@ BUILD_DIR = build
 BINARY   = $(BUILD_DIR)/kb
 INSTALL  = /usr/local/bin/kb
 COMPILE  = /opt/kb/compile.py
+SUPERSEDE = /opt/kb/supersede_index.py
 PATTERNS = /opt/kb/secret_patterns.json
 DAEMON   = /opt/kb/embed_daemon.py
 REFRESH  = /opt/kb/refresh_volatile.sh
@@ -25,6 +26,7 @@ test:
 install: build
 	sudo cp $(BINARY) $(INSTALL)
 	sudo cp $(RUNTIME)/compile.py $(COMPILE)
+	sudo install -m 0644 $(RUNTIME)/supersede_index.py $(SUPERSEDE)
 	sudo cp $(CONFIG)/secret_patterns.json $(PATTERNS)
 	sudo install -m 0644 $(RUNTIME)/embed_daemon.py $(DAEMON)
 	sudo install -m 0755 $(RUNTIME)/refresh_volatile.sh $(REFRESH)

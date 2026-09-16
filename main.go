@@ -155,6 +155,12 @@ func main() {
 		cmdPending(ctx, invocation.Profile)
 	case "retire":
 		cmdRetire(ctx, invocation.Args, invocation.Profile)
+	case "supersede":
+		cmdSupersede(ctx, invocation.Args, invocation.Profile)
+	case "history":
+		cmdHistory(ctx, invocation.Args, invocation.Profile)
+	case "rebuild-supersede-index":
+		cmdRebuildSupersedeIndex(ctx, invocation.Profile)
 	}
 }
 
@@ -165,7 +171,7 @@ func parseInvocation(args []string) (commandInvocation, error) {
 
 	command := args[0]
 	switch command {
-	case "ask", "add", "list", "search", "pending", "retire":
+	case "ask", "add", "list", "search", "pending", "retire", "supersede", "history", "rebuild-supersede-index":
 	default:
 		return commandInvocation{}, fmt.Errorf("unknown command %q", command)
 	}
@@ -258,6 +264,9 @@ Commands:
   search [--corpus homelab|ai] "query" [limit]        FTS5 search
   pending [--corpus homelab|ai]                       Pending entries
   retire [--corpus homelab|ai] <id>                   Delete one entry (all layers)
+  supersede [--corpus homelab|ai] <id> <replacement>  Mark entry obsolete, point to replacement ref
+  history <corpus:id>                                 Show an entry's supersede lineage (predecessors + successors)
+  rebuild-supersede-index                             Rebuild the derived supersede edge index from markers
 
 For --alt, faithfully translate the same intent into the other language. Do not
 add facts or broaden/narrow it; preserve technical literals exactly.
@@ -273,7 +282,10 @@ Examples:
   kb search "docker"
   kb search --corpus ai "transformers" 10
   kb pending
-  kb retire 584`)
+  kb retire 584
+  kb supersede 321 "homelab:323"
+  kb history homelab:323
+  kb rebuild-supersede-index`)
 }
 
 // ─── ask ──────────────────────────────────────────────────────────────────────
@@ -731,12 +743,131 @@ func cmdRetire(ctx context.Context, args []string, profile CorpusProfile) {
 	}
 }
 
+// ─── supersede ──────────────────────────────────────────────────────────────
+
+// cmdSupersede marks one existing entry obsolete and records the replacement
+// reference, delegating to compile.py --supersede (which preserves the id and
+// history, prefixes the title with [SUPERSEDED], re-embeds so the marker
+// reaches Chroma, and is idempotent). Like retire it shells out rather than
+// mutating layers itself, so the four-layer ordering stays owned by compile.py.
+//
+// Unlike retire, the target row MUST exist: superseding a missing entry is a
+// caller error (a wrong id), not a cleanup of an orphan vector — so a missing
+// row is a hard failure here.
+func cmdSupersede(ctx context.Context, args []string, profile CorpusProfile) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "Usage: kb supersede [--corpus homelab|ai] <id> <replacement-ref>")
+		fmt.Fprintln(os.Stderr, "  replacement-ref: KB reference(s) of the current entry, e.g. \"homelab:323\"")
+		os.Exit(1)
+	}
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil || id <= 0 {
+		fmt.Fprintf(os.Stderr, "Invalid id %q: expected a positive integer\n", args[0])
+		os.Exit(1)
+	}
+	replacement := strings.TrimSpace(args[1])
+	if replacement == "" {
+		fmt.Fprintln(os.Stderr, "Error: replacement reference must not be empty")
+		os.Exit(1)
+	}
+
+	title, found, err := lookupEntryTitle(ctx, profile, id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading entry %d: %v\n", id, err)
+		os.Exit(1)
+	}
+	if !found {
+		fmt.Fprintf(os.Stderr, "supersede %s:%d — no such entry; refusing (a supersede target must exist)\n", profile.Name, id)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "supersede %s:%d — %s  →  %s\n", profile.Name, id, title, replacement)
+
+	// Confirm only when a human is watching; scripts and the MCP server run
+	// without a terminal and must not block.
+	if stdinIsTerminal() {
+		fmt.Fprint(os.Stderr, "Mark superseded? [y/N] ")
+		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
+			fmt.Fprintln(os.Stderr, "Aborted.")
+			os.Exit(1)
+		}
+	}
+
+	argv := profile.compileArgv("--supersede", strconv.FormatInt(id, 10), "--replacement", replacement)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "supersede failed (%s): %v\n", strings.Join(argv, " "), err)
+		os.Exit(1)
+	}
+}
+
 func stdinIsTerminal() bool {
 	info, err := os.Stdin.Stat()
 	if err != nil {
 		return false
 	}
 	return info.Mode()&os.ModeCharDevice != 0
+}
+
+func stdoutIsTerminal() bool {
+	info, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// ─── history ──────────────────────────────────────────────────────────────
+
+// cmdHistory prints the supersede lineage of one entry — every explicitly
+// linked predecessor and successor, in a single call, with no LLM or vector
+// lookup. Cross-corpus by design: the argument is a full <corpus:id> reference
+// and compile.py traverses the shared edge index across both corpora. Thin
+// wrapper — compile.py owns the traversal and the completeness/warnings
+// contract. On a terminal it prints the readable chain; when piped (MCP,
+// scripts) it emits JSON.
+func cmdHistory(ctx context.Context, args []string, profile CorpusProfile) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "Usage: kb history <corpus:id>   e.g. kb history homelab:323")
+		os.Exit(1)
+	}
+	ref := strings.TrimSpace(args[0])
+	if ref == "" {
+		fmt.Fprintln(os.Stderr, "Error: reference must not be empty")
+		os.Exit(1)
+	}
+	extra := []string{"--history", ref}
+	if !stdoutIsTerminal() {
+		extra = append(extra, "--json")
+	}
+	argv := profile.compileArgv(extra...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "history failed (%s): %v\n", strings.Join(argv, " "), err)
+		os.Exit(1)
+	}
+}
+
+// ─── rebuild-supersede-index ────────────────────────────────────────────────
+
+// cmdRebuildSupersedeIndex regenerates the derived edge index from the
+// canonical markers in every corpus. It is a separate maintenance command, never
+// automatic: it is the only thing that clears the stale flag a recover sets, and
+// it is the bootstrap step after deploy. Thin wrapper over compile.py, which
+// marks the index valid only on a successful rebuild.
+func cmdRebuildSupersedeIndex(ctx context.Context, profile CorpusProfile) {
+	argv := profile.compileArgv("--rebuild-supersede-index")
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "rebuild-supersede-index failed (%s): %v\n", strings.Join(argv, " "), err)
+		os.Exit(1)
+	}
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
