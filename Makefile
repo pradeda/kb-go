@@ -3,6 +3,17 @@ BINARY   = $(BUILD_DIR)/kb
 INSTALL  = /usr/local/bin/kb
 RUNTIME  = runtime
 CONFIG   = config
+
+# Owner of the user-service artifact (the health wrapper). Deliberately a LITERAL
+# default, not `$(shell id -un)`: deriving it from the invoking user means
+# `sudo make install` silently produces a root-owned 0700 file that the user unit
+# running it can no longer read. check-service-user refuses an empty or root
+# value instead of deploying one.
+#
+# Changing this implies changing the destination path below AND the ExecStart in
+# deploy/systemd/kb-health.service (both assume /home/turok); they are kept as
+# literals on purpose so the coupling is visible.
+SERVICE_USER ?= turok
 BUILD    = go build -tags fts5 -o $(BINARY) .
 TEST     = go test -tags sqlite_fts5 ./...
 PYTEST   = PYTHONPATH=$(RUNTIME) /usr/bin/python3 -m unittest discover -s tests -p 'test_*.py' -v
@@ -25,7 +36,7 @@ DEPLOY_MANIFEST = \
 	runtime/watcher.sh:/opt/kb/watcher.sh:755:root \
 	runtime/kb_atlas.py:/opt/kb/kb_atlas.py:755:root \
 	runtime/atlas_template.html:/opt/kb/atlas_template.html:644:root \
-	runtime/kb-health-check.sh:/home/turok/scripts/kb-health-check.sh:700:$(shell id -un)
+	runtime/kb-health-check.sh:/home/turok/scripts/kb-health-check.sh:700:$(SERVICE_USER)
 
 # Runtime files that are deliberately NOT deployed because they run from the
 # repo (see the README provisioning section). Everything else under runtime/
@@ -36,12 +47,24 @@ build:
 	mkdir -p $(BUILD_DIR)
 	$(BUILD)
 
+# A user-service artifact must not be owned by root, and the owner must exist —
+# otherwise the unit that runs it fails with "permission denied" and nothing
+# points at the install step as the cause.
+check-service-user:
+	@user="$(SERVICE_USER)"; \
+	if [ -z "$$user" ] || [ "$$user" = "root" ]; then \
+		echo "SERVICE_USER must be a non-root user (got '$$user') — the health wrapper runs under a user unit"; exit 1; \
+	fi; \
+	id -u "$$user" >/dev/null 2>&1 || { echo "SERVICE_USER '$$user' does not exist on this host"; exit 1; }; \
+	echo "check-service-user: $$user"
+
 test:
 	$(TEST)
 	$(PYTEST)
 	./tests/test_refresh_volatile.sh
 	./tests/test-kb-health-check.sh
 	$(MAKE) check-manifest
+	$(MAKE) check-service-user
 
 # Hermetic: no /opt/kb, no host state. Fails when a runtime file would silently
 # never be deployed, which is the drift a plain `make test` cannot see.
@@ -56,7 +79,7 @@ check-manifest:
 	[ $$fail -eq 0 ] || exit 1; \
 	echo "check-manifest: $$total artifacts declared, every runtime/ file deployed or exempt"
 
-install: build
+install: build check-service-user
 	sudo install -m 0755 $(BINARY) $(INSTALL)
 	@for entry in $(DEPLOY_MANIFEST); do \
 		src=$${entry%%:*}; rest=$${entry#*:}; dst=$${rest%%:*}; rest=$${rest#*:}; \
@@ -73,7 +96,7 @@ install: build
 # Host-specific: compares every manifest artifact with what is actually
 # installed on this machine. Kept out of `make test` on purpose — a unit test
 # must not depend on /opt/kb existing (developers, CI).
-verify-installed:
+verify-installed: check-service-user
 	@fail=0; total=0; \
 	for entry in $(DEPLOY_MANIFEST); do \
 		total=$$((total + 1)); \
@@ -94,4 +117,4 @@ verify-installed:
 	[ $$fail -eq 0 ] || exit 1; \
 	echo "verify-installed: $$total/$$total artifacts match (sha256 + mode + owner)"
 
-.PHONY: build test check-manifest install verify-installed
+.PHONY: build test check-manifest check-service-user install verify-installed

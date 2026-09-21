@@ -261,6 +261,11 @@ it is run by a **user** unit, so a root-owned copy would be unreadable to its ow
 service). It runs `compile.py` for both corpora, then `--health` for each, and
 alerts on Telegram only on failure.
 
+The owner comes from `SERVICE_USER` (default `turok`), a literal rather than the
+user running make — otherwise `sudo make install` would quietly produce a
+root-owned file. `make check-service-user` (part of `make test` and of
+`install`/`verify-installed`) refuses an empty, non-existent or `root` value.
+
 `--health` takes a shared lock on the corpus and reports a stable machine
 contract by **exit code**: `0` invariants verified, `3` "busy" (a mutating run
 held the lock for the whole `KB_HEALTH_LOCK_TIMEOUT`, default 60s) and any other
