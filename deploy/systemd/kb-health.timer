@@ -1,0 +1,17 @@
+[Unit]
+Description=KB health — dnevno u 02:15 i 10 min posle boot-a
+
+[Timer]
+# Dnevno pre kb-backup.sh (02:30): ako je stanje razislo, hoces to da znas
+# pre nego sto backup ode na NAS.
+OnCalendar=*-*-* 02:15:00
+# Ponedeljni reboot u 04:30 je jedini dokazani uzrok raskoraka (orphan vektori
+# posle hladnog starta Chrome). Odlaganje daje Docker-u vremena da podigne
+# kb-chromadb.
+OnBootSec=10min
+Persistent=true
+AccuracySec=5min
+Unit=kb-health.service
+
+[Install]
+WantedBy=timers.target

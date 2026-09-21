@@ -1,0 +1,10 @@
+[Unit]
+Description=Provera invarijanti oba KB corpusa (compile pending + SQLite/Chroma health)
+Documentation=file:/home/turok/scripts/kb-health-check.sh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/turok/scripts/kb-health-check.sh
+TimeoutStartSec=10min

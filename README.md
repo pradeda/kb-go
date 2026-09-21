@@ -253,6 +253,31 @@ binds to the open file description, not to the process, so a parent holding the 
 while its child locks the same path deadlocks silently — the child waits forever and
 the unit still reads `active`. Do not re-add one.
 
+### KB health check
+
+`runtime/kb-health-check.sh` is deployed by `make install` to
+`/home/turok/scripts/kb-health-check.sh` (mode 0700, owned by the invoking user —
+it is run by a **user** unit, so a root-owned copy would be unreadable to its own
+service). It runs `compile.py` for both corpora, then `--health` for each, and
+alerts on Telegram only on failure.
+
+`--health` takes a shared lock on the corpus and reports a stable machine
+contract by **exit code**: `0` invariants verified, `3` "busy" (a mutating run
+held the lock for the whole `KB_HEALTH_LOCK_TIMEOUT`, default 60s) and any other
+non-zero value a real fault. The wrapper keys off that code alone and logs `3`
+without alarming; never match on the output text.
+
+Unit files live in `deploy/systemd/` and are copied by hand (same as the Atlas
+units):
+
+```bash
+cp deploy/systemd/kb-health.service deploy/systemd/kb-health.timer ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now kb-health.timer
+```
+
+`tests/test-kb-health-check.sh` exercises the wrapper against a stubbed
+`compile.py` (ok / busy / mismatch) and is part of `make test`.
+
 ### KB Atlas
 
 Static visual overview of both corpora (`http://192.168.1.174:3085`), regenerated daily at 06:30. Zero LLM calls — pure geometry over the vectors that already exist in ChromaDB.
@@ -329,6 +354,7 @@ The `kb ask` command requires `OPENROUTER_API_KEY` in the env file (used by the 
 | KB Search API | `/opt/kb/venv-search/bin/python /opt/kb/kb_search_api.py` | `:8050` (user unit: `kb-search-api`) |
 | MCP server | `/opt/kb/venv/bin/python3 /opt/kb/mcp_server.py` | system units `kb-mcp-sse` / `kb-mcp-http`; stdio clients |
 | KB watchers | `/opt/kb/watcher.sh` → `/opt/kb/venv-embed/bin/python` | system units `kb-watcher` / `ai-kb-watcher` |
+| KB health check | `/home/turok/scripts/kb-health-check.sh` (deployed from `runtime/`) | user units `kb-health.service` / `kb-health.timer` (02:15 + 10 min after boot) |
 | FastEmbed daemon | `/opt/kb/venv-embed/bin/python /opt/kb/embed_daemon.py` | system unit `kb-embed` |
 | KB Atlas | `/opt/kb/venv-embed/bin/python /opt/kb/kb_atlas.py` | `:3085` (user units `kb-atlas` / `kb-atlas-rebuild.timer`) |
 | ChromaDB | Docker: `kb-chromadb` (image pinned, no watchtower) | `:8000` (localhost only) |
@@ -341,7 +367,16 @@ Run the canonical suite through the Makefile so the SQLite driver is compiled wi
 make test
 ```
 
-This runs `go test -tags sqlite_fts5 ./...` plus the compiler, provisioning, metadata, watcher, and Atlas template/JS contract tests. Plain `go test ./...` does not enable the FTS5 module and is not the supported test command.
+This runs `go test -tags sqlite_fts5 ./...` plus the compiler, provisioning, metadata, watcher, and Atlas template/JS contract tests, the `tests/test_refresh_volatile.sh` and `tests/test-kb-health-check.sh` shell fixtures, and `check-manifest` (every file under `runtime/` must be in `DEPLOY_MANIFEST` or `DEPLOY_EXEMPT`). Plain `go test ./...` does not enable the FTS5 module and is not the supported test command.
+
+`make test` is hermetic — no test reads `/opt/kb` or any host state. Verifying
+what is actually deployed is a separate, host-specific target:
+
+```bash
+make verify-installed   # sha256 + mode + owner of all nine artifacts vs the manifest
+```
+
+`make install` runs it automatically at the end, so an install is self-checking.
 
 Python and shell fixtures live under `tests/`; deployable helpers live under
 `runtime/`, static runtime inputs under `config/`, and unit files under
