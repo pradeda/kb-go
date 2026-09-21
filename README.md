@@ -87,6 +87,8 @@ mkdir -p build
 go build -tags fts5 -o build/kb .
 sudo cp build/kb /usr/local/bin/kb
 sudo cp runtime/compile.py /opt/kb/compile.py
+sudo cp runtime/watcher.sh /opt/kb/watcher.sh
+sudo cp runtime/refresh_volatile.sh /opt/kb/refresh_volatile.sh
 ```
 
 AI storage provisioning is an explicit, fixed-target operation. It initializes the
@@ -241,7 +243,15 @@ for 5s, and run `compile.py` for their fixed corpus through
 `/opt/kb/venv-embed/bin/python`. One shared `watcher.sh` serves both units, so an
 interpreter change must be deployed and verified for both watchers together.
 
-Uses a **blocking** `flock` (not `flock -n`): an event that arrives while a compile is already running waits for its own run instead of being silently dropped — otherwise the entry would stay unembedded (invisible to semantic search) until some future event triggered another compile.
+Mutual exclusion between a pass and any other writer (a concurrent `kb retire`, the
+volatile refresh, `kb-health-check.sh`) is owned by **`compile.py`**, which takes the
+per-corpus lock (`CORPUS_PROFILES[*]["watcher_lock"]`, i.e. `/tmp/kb-watcher.lock` /
+`/tmp/ai-kb-watcher.lock`) for every mutating mode and holds it for the whole pass;
+`--health` and `--history` stay lock-free so the 02:15 health timer never queues behind
+an embedding pass. `watcher.sh` deliberately takes **no** shell-level `flock`: `flock`
+binds to the open file description, not to the process, so a parent holding the lock
+while its child locks the same path deadlocks silently — the child waits forever and
+the unit still reads `active`. Do not re-add one.
 
 ### KB Atlas
 
