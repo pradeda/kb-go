@@ -4,31 +4,42 @@ Written for the 2026-08-12 health alert: ChromaDB held vector 584 whose SQLite
 row was already gone, and retire_entry refused that state with LookupError — so
 the documented recovery tool could not repair the one failure --health reports.
 
-Run from the repo:  PYTHONPATH=. python3 -m unittest tests.test_retire_orphan
+Run from the repo:  python3 -m unittest test_retire_orphan
 Run from /opt/kb:   python3 /opt/kb/tests/test_retire_orphan.py
 """
 import importlib.util
 import pathlib
 import sqlite3
+import sys
 import tempfile
 import unittest
 
 # Resolve compile.py relative to this file so the test always exercises the copy
-# it ships with: the parent directory in both the kb-go repo and /opt/kb/tests.
-# A hardcoded "/opt/kb" would make the repo test the deployed
-# file instead, so a stale repo copy would still pass — the exact drift that let
-# the orphan fix live only in production until 2026-08-12.
+# it ships with, in every layout: a candidate copy beside the test (used to
+# exercise a change before deployment), the kb-go repo (runtime/compile.py), and
+# the deployed /opt/kb tree. A hardcoded "/opt/kb" would make the repo test the
+# deployed file instead, so a stale repo copy would still pass — the exact drift
+# that let the orphan fix live only in production until 2026-08-12.
 _HERE = pathlib.Path(__file__).resolve().parent
 for _candidate in (
+    _HERE / "compile.py",
     _HERE.parent / "runtime" / "compile.py",
     _HERE.parent / "compile.py",
-    _HERE / "compile.py",
 ):
     if _candidate.exists():
         MODULE_PATH = _candidate
         break
 else:
     raise RuntimeError(f"compile.py not found next to or above {_HERE}")
+
+# compile.py imports its sibling supersede_index, and the module under test may
+# be a candidate copy in this directory rather than the deployed parent, so every
+# plausible directory goes on the path. Without this the documented invocation
+# (`python3 /opt/kb/tests/test_retire_orphan.py`) dies on ModuleNotFoundError.
+for _path in (str(MODULE_PATH.parent), str(_HERE.parent / "runtime"),
+              str(_HERE.parent), str(_HERE)):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 SPEC = importlib.util.spec_from_file_location("kb_compile", MODULE_PATH)
 kbcompile = importlib.util.module_from_spec(SPEC)
