@@ -76,20 +76,27 @@ Layer 4: Threshold 0.40 → cap top 5 (full) / top 3 (websearch)
 ## Build
 
 ```bash
-make build    # builds kb binary
-make install  # builds build/kb and installs the owned runtime/config files
+make build            # builds kb binary
+make install          # installs every artifact in DEPLOY_MANIFEST, then verifies it
+make verify-installed # sha256 + mode + owner of all nine artifacts vs the manifest
 ```
 
-Manual:
+`make install` has no hand-written copy list. `DEPLOY_MANIFEST` in the Makefile is
+the single source for installation, verification and the `check-manifest` test,
+with one entry per artifact:
 
-```bash
-mkdir -p build
-go build -tags fts5 -o build/kb .
-sudo cp build/kb /usr/local/bin/kb
-sudo cp runtime/compile.py /opt/kb/compile.py
-sudo cp runtime/watcher.sh /opt/kb/watcher.sh
-sudo cp runtime/refresh_volatile.sh /opt/kb/refresh_volatile.sh
 ```
+<repo source>:<deployed destination>:<mode>:<owner>
+```
+
+Nine artifacts: the eight runtime/config files under `/opt/kb` plus
+`runtime/kb-health-check.sh` → `/home/turok/scripts/kb-health-check.sh` (owned by
+`SERVICE_USER`, default `turok`, because a **user** unit runs it). `install` passes
+`-o`/`-g` from that field, and `verify-installed` checks ownership as well as hash
+and mode — a root-owned copy of the health wrapper would be unreadable to its own
+service. Do not add a file to the install recipe without adding it to the manifest:
+that is how `runtime/watcher.sh` once stayed tracked, referenced by both systemd
+units, and never installed.
 
 AI storage provisioning is an explicit, fixed-target operation. It initializes the
 `entries`/FTS5 schema, merge-migrates Homelab collection metadata without dropping
