@@ -64,64 +64,26 @@ type commandInvocation struct {
 	AltLang string
 }
 
-type singleCorpusFlag struct {
-	value *string
-	set   bool
-}
-
-type singleScopeFlag struct {
-	value *string
-	set   bool
-}
-
-type singleAskValueFlag struct {
+// singleValueFlag is a flag.Value that takes one value and refuses a second
+// occurrence. The name is used in the error, so "--scope may be specified only
+// once" and "--corpus may be specified only once" come from one implementation
+// instead of three near-identical types.
+type singleValueFlag struct {
 	value *string
 	name  string
 	set   bool
 }
 
-func (f *singleAskValueFlag) String() string {
+func (f *singleValueFlag) String() string {
 	if f == nil || f.value == nil {
 		return ""
 	}
 	return *f.value
 }
 
-func (f *singleAskValueFlag) Set(value string) error {
+func (f *singleValueFlag) Set(value string) error {
 	if f.set {
 		return fmt.Errorf("--%s may be specified only once", f.name)
-	}
-	f.set = true
-	*f.value = value
-	return nil
-}
-
-func (f *singleScopeFlag) String() string {
-	if f == nil || f.value == nil {
-		return ""
-	}
-	return *f.value
-}
-
-func (f *singleScopeFlag) Set(value string) error {
-	if f.set {
-		return errors.New("--scope may be specified only once")
-	}
-	f.set = true
-	*f.value = value
-	return nil
-}
-
-func (f *singleCorpusFlag) String() string {
-	if f == nil || f.value == nil {
-		return defaultCorpus
-	}
-	return *f.value
-}
-
-func (f *singleCorpusFlag) Set(value string) error {
-	if f.set {
-		return errors.New("--corpus may be specified only once")
 	}
 	f.set = true
 	*f.value = value
@@ -184,11 +146,11 @@ func parseInvocation(args []string) (commandInvocation, error) {
 	alt := ""
 	altLang := ""
 	if command == "ask" {
-		fs.Var(&singleScopeFlag{value: &scope}, "scope", "search scope (homelab, ai, or both)")
-		fs.Var(&singleAskValueFlag{value: &alt, name: "alt"}, "alt", "same question in the other language")
-		fs.Var(&singleAskValueFlag{value: &altLang, name: "alt-lang"}, "alt-lang", "alternate language (sr or en)")
+		fs.Var(&singleValueFlag{value: &scope, name: "scope"}, "scope", "search scope (homelab, ai, or both)")
+		fs.Var(&singleValueFlag{value: &alt, name: "alt"}, "alt", "same question in the other language")
+		fs.Var(&singleValueFlag{value: &altLang, name: "alt-lang"}, "alt-lang", "alternate language (sr or en)")
 	} else {
-		fs.Var(&singleCorpusFlag{value: &corpusName}, "corpus", "target corpus (homelab or ai)")
+		fs.Var(&singleValueFlag{value: &corpusName, name: "corpus"}, "corpus", "target corpus (homelab or ai)")
 	}
 	commandArgs := args[1:]
 	flagArgs := []string{}
