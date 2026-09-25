@@ -1125,7 +1125,12 @@ func callOpenRouter(ctx context.Context, prompt string, start time.Time) error {
 		fmt.Fprintf(os.Stderr, "[%v] Stream started...\n", time.Since(start).Round(time.Millisecond))
 		return streamCompletion(ctx, resp.Body, start)
 	}
-	return fmt.Errorf("OpenRouter rate limited after retry")
+	// Every path of the last iteration returns above: a 429 on attempt 1 does not
+	// match the retry branch and falls through to the status check. Go still requires
+	// a terminating statement after a bounded loop, so this is an assertion rather
+	// than an error path - the message it replaces ("rate limited after retry") read
+	// like a real outcome and could never be returned.
+	panic("callOpenRouter: retry loop exited without a response")
 }
 
 // streamCompletion prints the SSE stream from OpenRouter. Chunk is declared inside
