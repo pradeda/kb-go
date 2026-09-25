@@ -198,3 +198,64 @@ func TestShannonEntropy(t *testing.T) {
 		t.Errorf("random string entropy = %v, want >=4.0", e)
 	}
 }
+
+// ─── Gate 1: the title is scanned with the same rules as the body ─────────────
+//
+// A secret that appears only in the title used to be redacted silently: the
+// scanner dropped the title's hits, so `kb add` never warned, never quarantined
+// the pre-redaction text and never wrote an .orig backup. Python Gate 2
+// (compile.py sanitize_unembedded) counts title and summary hits, so the two
+// gates disagreed about the same input.
+
+func TestSanitizeWriteCountsTitleHits(t *testing.T) {
+	profile, err := corpusProfile(defaultCorpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const secretTitle = "POSTGRES_PASSWORD=hunter2xyz"
+
+	cleanedContent, cleanedTitle, hits, err := sanitizeWrite(profile, "clean body", secretTitle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanedContent != "clean body" {
+		t.Errorf("body mutated without a secret in it: %q", cleanedContent)
+	}
+	if strings.Contains(cleanedTitle, "hunter2xyz") || !strings.Contains(cleanedTitle, "<REDACTED_SECRET>") {
+		t.Errorf("title not redacted: %q", cleanedTitle)
+	}
+	if len(hits) == 0 {
+		t.Fatal("title-only secret produced no hit: kb add would stay silent")
+	}
+}
+
+func TestSanitizeWriteCountsBodyAndTitleHits(t *testing.T) {
+	profile, err := corpusProfile(defaultCorpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, hits, err := sanitizeWrite(profile, "token=0123456789abcdef0123456789abcdef", "POSTGRES_PASSWORD=hunter2xyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) < 2 {
+		t.Fatalf("hits = %+v, want a hit for the body and the title", hits)
+	}
+}
+
+// The .orig backup must contain every original field the scanner mutated -
+// otherwise the pre-redaction title is lost forever (compile.py Gate 2 renders
+// the same shape for the fields it has: title, summary, content).
+func TestQuarantinePayloadKeepsOriginalTitle(t *testing.T) {
+	const secretTitle = "POSTGRES_PASSWORD=hunter2xyz"
+
+	if got, want := quarantinePayload(secretTitle, "clean body", "title <REDACTED_SECRET>", "clean body"),
+		"title: "+secretTitle+"\n\nclean body"; got != want {
+		t.Errorf("quarantinePayload with a mutated title = %q, want %q", got, want)
+	}
+	if got, want := quarantinePayload("clean title", "clean body", "clean title", "clean body"), "clean body"; got != want {
+		t.Errorf("quarantinePayload with nothing mutated = %q, want %q", got, want)
+	}
+}
+
+// End of Gate 1 title coverage.

@@ -299,5 +299,80 @@ class CorpusProfileTests(unittest.TestCase):
             kb_compile._secret_rules = None
 
 
+SECRET_TITLE = "POSTGRES_PASSWORD=hunter2xyz"
+
+
+class Gate2QuarantineTests(unittest.TestCase):
+    """Gate 2 must quarantine every original field it redacts, not only the body.
+
+    A secret that appeared only in the title used to leave nothing behind: the row
+    was redacted (the title-hit accounting already worked here) but the .orig backup
+    held the clean body, so the original title was gone. Go Gate 1 now records the
+    same payload for the fields it has (title, content) - see quarantinePayload in
+    secretscan.go.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = pathlib.Path(self.temp.name)
+        self.db_path = root / "corpus.db"
+        self.raw_path = root / "raw" / "notes" / "2026-09-25-note.md"
+        self.raw_path.parent.mkdir(parents=True)
+        self.raw_path.write_text("clean body", encoding="utf-8")
+        db = sqlite3.connect(self.db_path)
+        db.executescript(
+            (MODULE_PATH.parent.parent / "config" / "schema.sql").read_text(encoding="utf-8")
+        )
+        db.execute(
+            "INSERT INTO entries (id, type, content, title, tags, summary, raw_path)"
+            " VALUES (1, 'note', 'clean body', ?, 't', '', ?)",
+            (SECRET_TITLE, str(self.raw_path)),
+        )
+        db.commit()
+        db.close()
+        self._saved = (
+            kb_compile.DB, kb_compile.QUARANTINE_DIR, kb_compile.QUARANTINE_LOG,
+            kb_compile.SECRET_PATTERNS_FILE, kb_compile._secret_rules,
+        )
+        kb_compile.DB = self.db_path
+        kb_compile.QUARANTINE_DIR = root / "quarantine"
+        kb_compile.QUARANTINE_LOG = root / "quarantine.log"
+        kb_compile.SECRET_PATTERNS_FILE = MODULE_PATH.parent.parent / "config" / "secret_patterns.json"
+        kb_compile._secret_rules = None
+
+    def tearDown(self):
+        (
+            kb_compile.DB, kb_compile.QUARANTINE_DIR, kb_compile.QUARANTINE_LOG,
+            kb_compile.SECRET_PATTERNS_FILE, kb_compile._secret_rules,
+        ) = self._saved
+        self.temp.cleanup()
+
+    def test_title_only_secret_is_quarantined_with_its_original_title(self):
+        rows = kb_compile.get_unembedded()
+        self.assertEqual(len(rows), 1)
+        with contextlib.redirect_stdout(io.StringIO()):
+            kb_compile.sanitize_unembedded(rows)
+
+        db = sqlite3.connect(self.db_path)
+        try:
+            title, content = db.execute("SELECT title, content FROM entries WHERE id=1").fetchone()
+        finally:
+            db.close()
+        self.assertNotIn("hunter2xyz", title, "title was not redacted")
+        self.assertIn("<REDACTED_SECRET>", title)
+        self.assertEqual(content, "clean body")
+
+        backups = sorted(kb_compile.QUARANTINE_DIR.glob("*.orig"))
+        self.assertEqual(len(backups), 1, "title-only secret produced no .orig backup")
+        payload = backups[0].read_text(encoding="utf-8")
+        self.assertIn(SECRET_TITLE, payload, "the pre-redaction title was not preserved")
+        self.assertIn("clean body", payload)
+
+    def test_clean_entry_writes_no_quarantine(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            kb_compile.sanitize_unembedded([(1, "note", "clean body", "clean title", "t", "", str(self.raw_path))])
+        self.assertFalse(kb_compile.QUARANTINE_DIR.exists() and list(kb_compile.QUARANTINE_DIR.glob("*.orig")))
+
+
 if __name__ == "__main__":
     unittest.main()

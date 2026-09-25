@@ -419,6 +419,7 @@ func cmdAdd(ctx context.Context, args []string, profile CorpusProfile) {
 
 	// Gate 1: redact secrets before content reaches SQLite/FTS or the raw file.
 	origContent := content
+	origTitle := title
 	var scanHits []scanHit
 	var rerr error
 	content, title, scanHits, rerr = sanitizeWrite(profile, content, title)
@@ -443,7 +444,7 @@ func cmdAdd(ctx context.Context, args []string, profile CorpusProfile) {
 	}
 
 	if len(scanHits) > 0 {
-		backup := recordQuarantine(profile, origContent, content, "cli", slug, scanHits)
+		backup := recordQuarantine(profile, quarantinePayload(origTitle, origContent, title, content), content, "cli", slug, scanHits)
 		names := make([]string, 0, len(scanHits))
 		for _, h := range scanHits {
 			names = append(names, h.Pattern+"("+h.Action+")")

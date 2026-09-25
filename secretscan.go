@@ -48,9 +48,27 @@ func sanitizeWrite(profile CorpusProfile, content, title string) (string, string
 	cleanedContent, hits := rules.Sanitize(content)
 	cleanedTitle := title
 	if title != "" {
-		cleanedTitle, _ = rules.Sanitize(title)
+		var titleHits []scanHit
+		cleanedTitle, titleHits = rules.Sanitize(title)
+		// A secret in the title must reach the caller: the hits drive the warning
+		// and the .orig backup, exactly as a secret in the body does.
+		hits = append(hits, titleHits...)
 	}
 	return cleanedContent, cleanedTitle, hits, nil
+}
+
+// quarantinePayload renders the pre-redaction record for the .orig backup: the
+// original content, prefixed with the original title when the scanner mutated the
+// title too. Without this the title's original text would be lost - the raw file
+// and SQLite both hold the redacted title.
+//
+// compile.py Gate 2 renders the same shape (_quarantine_payload) for the fields it
+// has: title, summary, content.
+func quarantinePayload(origTitle, origContent, cleanedTitle, cleanedContent string) string {
+	if origTitle != cleanedTitle {
+		return fmt.Sprintf("title: %s\n\n%s", origTitle, origContent)
+	}
+	return origContent
 }
 
 func loadSecretRules(path string) (*SecretRules, error) {
