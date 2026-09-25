@@ -183,7 +183,7 @@ func parseInvocation(args []string) (commandInvocation, error) {
 	alt := ""
 	altLang := ""
 	if command == "ask" {
-		fs.Var(&singleScopeFlag{value: &scope}, "scope", "search scope (homelab, ai, both, or auto)")
+		fs.Var(&singleScopeFlag{value: &scope}, "scope", "search scope (homelab, ai, or both)")
 		fs.Var(&singleAskValueFlag{value: &alt, name: "alt"}, "alt", "same question in the other language")
 		fs.Var(&singleAskValueFlag{value: &altLang, name: "alt-lang"}, "alt-lang", "alternate language (sr or en)")
 	} else {
@@ -235,8 +235,8 @@ func parseInvocation(args []string) (commandInvocation, error) {
 			return commandInvocation{}, fmt.Errorf("unknown or misplaced option %q", arg)
 		}
 	}
-	if scope != "" && scope != "homelab" && scope != "ai" && scope != "both" && scope != "auto" {
-		return commandInvocation{}, fmt.Errorf("unknown scope %q (allowed: homelab, ai, both, auto)", scope)
+	if scope != "" && scope != "homelab" && scope != "ai" && scope != "both" {
+		return commandInvocation{}, fmt.Errorf("unknown scope %q (allowed: homelab, ai, both)", scope)
 	}
 	if (alt == "") != (altLang == "") {
 		return commandInvocation{}, errors.New("--alt and --alt-lang must be supplied together")
@@ -256,7 +256,7 @@ func printUsage() {
 	fmt.Println(`Usage: kb <command> [args...]
 
 Commands:
-  ask [--scope homelab|ai|both|auto] [--alt "other-language question" --alt-lang sr|en] "question"
+  ask [--scope homelab|ai|both] [--alt "other-language question" --alt-lang sr|en] "question"
   add [--corpus homelab|ai] note "content" "title" "tags"
   add [--corpus homelab|ai] note - "title" "tags"   Add from stdin
   add [--corpus homelab|ai] url "url" "title" "tags"

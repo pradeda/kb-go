@@ -18,7 +18,7 @@ kb ask "question"
   │     └── Threshold 0.40 + cap top 5
   └── OpenRouter LLM — synthesize answer from enriched chunks
 
-kb ask [--scope homelab|ai|both|auto] [--alt "other-language question" --alt-lang sr|en] "question"
+kb ask [--scope homelab|ai|both] [--alt "other-language question" --alt-lang sr|en] "question"
   ├── The same authenticated v2 route with allow_degraded=false
   ├── Fixed-shape, corpus-grouped results with qualified refs (homelab:1 / ai:1)
   ├── Homelab wiki index only when Homelab is selected
@@ -125,8 +125,10 @@ Requires: `KB_V2_TOKEN_KB_CLI_LOCAL` in `/opt/kb/.env`,
 plus KB Search API running on `:8050`. `KB_SEARCH_API_URL` overrides the search API base (default:
 `http://localhost:8050`); set it when the Search API runs on a different host. A trailing
 slash is tolerated. Calls without `--scope` default to `both`; all calls use
-authenticated v2 and there is no v1 fallback. `--scope auto` intentionally returns an error until the calibrated
-router is activated in a later phase.
+authenticated v2 and there is no v1 fallback. `--scope auto` is not offered: the
+router rejects it with 409 `auto_routing_not_enabled`, so the flag would always fail
+one request later. The API keeps the scope reserved for when the calibrated router is
+activated.
 
 `--alt` and `--alt-lang` are an optional pair. The alternate must be the same
 question faithfully translated into the other language: do not add facts or

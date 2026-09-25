@@ -176,7 +176,6 @@ func TestAskScopeCLIParsing(t *testing.T) {
 		{[]string{"ask", "--scope", "homelab", "question"}, "homelab", []string{"question"}},
 		{[]string{"ask", "--scope=ai", "question", "detail"}, "ai", []string{"question", "detail"}},
 		{[]string{"ask", "--scope", "both", "question"}, "both", []string{"question"}},
-		{[]string{"ask", "--scope", "auto", "question"}, "auto", []string{"question"}},
 	} {
 		got, err := parseInvocation(tc.argv)
 		if err != nil {
@@ -185,6 +184,19 @@ func TestAskScopeCLIParsing(t *testing.T) {
 		if got.Scope != tc.scope || got.Profile.Name != "homelab" || !reflect.DeepEqual(got.Args, tc.args) {
 			t.Errorf("parseInvocation(%q) = scope=%q corpus=%q args=%q, want %q homelab %q", tc.argv, got.Scope, got.Profile.Name, got.Args, tc.scope, tc.args)
 		}
+	}
+}
+
+// The router rejects scope "auto" with 409 auto_routing_not_enabled, so the CLI
+// must not accept it: an accepted flag that always fails one request later is
+// worse than an immediate refusal. The API keeps the scope in its contract.
+func TestAskScopeCLIRejectsAuto(t *testing.T) {
+	_, err := parseInvocation([]string{"ask", "--scope", "auto", "question"})
+	if err == nil {
+		t.Fatal("--scope auto was accepted; the backend rejects it with 409")
+	}
+	if !strings.Contains(err.Error(), "allowed: homelab, ai, both") {
+		t.Errorf("error %q should list the scopes the router can serve", err)
 	}
 }
 
