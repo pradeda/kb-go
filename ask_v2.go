@@ -12,18 +12,25 @@ import (
 	"time"
 )
 
+type v2NewerNote struct {
+	Ref      string `json:"ref"`
+	Title    string `json:"title"`
+	Relation string `json:"relation"`
+}
+
 type v2SearchResult struct {
-	Corpus          string  `json:"corpus"`
-	EntryID         int64   `json:"entry_id"`
-	Ref             string  `json:"ref"`
-	Title           string  `json:"title"`
-	Content         *string `json:"content"`
-	Tags            *string `json:"tags"`
-	PublicSourceURL *string `json:"public_source_url"`
-	Link            string  `json:"link"`
-	Distance        float64 `json:"distance"`
-	Relevance       float64 `json:"relevance"`
-	FinalScore      float64 `json:"final_score"`
+	Corpus          string        `json:"corpus"`
+	EntryID         int64         `json:"entry_id"`
+	Ref             string        `json:"ref"`
+	Title           string        `json:"title"`
+	Content         *string       `json:"content"`
+	Tags            *string       `json:"tags"`
+	PublicSourceURL *string       `json:"public_source_url"`
+	Link            string        `json:"link"`
+	Distance        float64       `json:"distance"`
+	Relevance       float64       `json:"relevance"`
+	FinalScore      float64       `json:"final_score"`
+	NewerNotes      []v2NewerNote `json:"newer_notes"`
 }
 
 type v2CorpusResults struct {
@@ -214,6 +221,10 @@ func formatV2Results(response v2SearchResponse) string {
 			}
 			if result.Content != nil {
 				output.WriteString(truncate(*result.Content, 3000))
+			}
+			for _, note := range result.NewerNotes {
+				output.WriteString(fmt.Sprintf(
+					"\n\u26a0 newer note %s this: %s \u2014 %s", note.Relation, note.Ref, note.Title))
 			}
 			output.WriteString("\n\n---\n\n")
 		}

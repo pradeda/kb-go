@@ -291,6 +291,62 @@ func TestSearchViaAPIV2Contract(t *testing.T) {
 	}
 }
 
+func TestSearchViaAPIV2DecodesAndRendersNewerNotes(t *testing.T) {
+	payload := `{"query":"q","requested_scope":"homelab","selected_scope":"homelab","routing_mode":"explicit","routing_reason":"explicit_scope","needs_clarification":false,"router_version":null,"degraded_corpora":[],"total_count":1,"corpora":{"homelab":{"searched":true,"available":true,"count":1,"results":[{"corpus":"homelab","entry_id":963,"ref":"homelab:963","title":"opencode Qwen route","content":"C","tags":"t","public_source_url":null,"link":"kb://homelab/963","distance":0.1,"relevance":0.9,"final_score":0.8,"newer_notes":[{"ref":"homelab:992","title":"Forrix Qwen per-model load defaults (updates homelab:963)","relation":"updates"}]}]},"ai":{"searched":false,"available":false,"count":0,"results":[]}}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer server.Close()
+
+	oldURL := kbSearchAPIV2
+	kbSearchAPIV2 = server.URL
+	defer func() { kbSearchAPIV2 = oldURL }()
+	t.Setenv("KB_V2_TOKEN_KB_CLI_LOCAL", "test-token")
+	response, err := searchViaAPIV2(context.Background(), "q", "", "", "homelab", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := response.Corpora["homelab"].Results[0].NewerNotes
+	if len(notes) != 1 || notes[0].Ref != "homelab:992" || notes[0].Relation != "updates" {
+		t.Fatalf("newer notes not decoded: %#v", notes)
+	}
+	formatted := formatV2Results(response)
+	want := "\u26a0 newer note updates this: homelab:992 \u2014 Forrix Qwen per-model load defaults (updates homelab:963)"
+	if !strings.Contains(formatted, want) {
+		t.Fatalf("formatted response lacks the warning line: %s", formatted)
+	}
+	// The warning belongs to its own result: it must come after that result's content
+	// and before the block separator.
+	if strings.Index(formatted, want) < strings.Index(formatted, "C") {
+		t.Fatalf("warning rendered before the result body: %s", formatted)
+	}
+}
+
+func TestSearchViaAPIV2WithoutNewerNotesRendersNoWarning(t *testing.T) {
+	payload := `{"query":"q","requested_scope":"homelab","selected_scope":"homelab","routing_mode":"explicit","routing_reason":"explicit_scope","needs_clarification":false,"router_version":null,"degraded_corpora":[],"total_count":1,"corpora":{"homelab":{"searched":true,"available":true,"count":1,"results":[{"corpus":"homelab","entry_id":963,"ref":"homelab:963","title":"opencode Qwen route","content":"C","tags":"t","public_source_url":null,"link":"kb://homelab/963","distance":0.1,"relevance":0.9,"final_score":0.8}]},"ai":{"searched":false,"available":false,"count":0,"results":[]}}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer server.Close()
+
+	oldURL := kbSearchAPIV2
+	kbSearchAPIV2 = server.URL
+	defer func() { kbSearchAPIV2 = oldURL }()
+	t.Setenv("KB_V2_TOKEN_KB_CLI_LOCAL", "test-token")
+	response, err := searchViaAPIV2(context.Background(), "q", "", "", "homelab", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Corpora["homelab"].Results[0].NewerNotes) != 0 {
+		t.Fatalf("absent field must decode to no notes: %#v", response.Corpora["homelab"].Results[0])
+	}
+	if formatted := formatV2Results(response); strings.Contains(formatted, "\u26a0") {
+		t.Fatalf("unexpected warning line: %s", formatted)
+	}
+}
+
 func TestSearchViaAPIV2CarriesAlternate(t *testing.T) {
 	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
