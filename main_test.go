@@ -19,9 +19,16 @@ import (
 
 // A bare `kb ask` must reach both corpora. "homelab" would hide the AI corpus
 // again; "auto" is rejected by the router with 409 until it is calibrated.
-func TestDefaultAskScopeIsBoth(t *testing.T) {
-	if defaultAskScope != "both" {
-		t.Fatalf("defaultAskScope = %q", defaultAskScope)
+func TestAskScopeResolution(t *testing.T) {
+	for _, tc := range []struct{ supplied, want string }{
+		{"", "both"},
+		{"homelab", "homelab"},
+		{"ai", "ai"},
+		{"both", "both"},
+	} {
+		if got := askScope(tc.supplied); got != tc.want {
+			t.Errorf("askScope(%q) = %q, want %q", tc.supplied, got, tc.want)
+		}
 	}
 }
 

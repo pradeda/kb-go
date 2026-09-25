@@ -304,12 +304,20 @@ func cmdAsk(ctx context.Context, args []string, profile CorpusProfile, invocatio
 	}
 }
 
-func runAsk(ctx context.Context, query, invocationScope, alt, altLang string, profile CorpusProfile, start time.Time) error {
-	scope := invocationScope
-	if scope == "" {
-		scope = defaultAskScope
+// askScope resolves the scope of a `kb ask` invocation: an explicitly supplied
+// --scope wins, otherwise the documented default is used.
+//
+// A bare `kb ask` must reach both corpora. "homelab" would hide the AI corpus
+// again; "auto" is rejected by the router with 409 until it is calibrated.
+func askScope(invocationScope string) string {
+	if invocationScope == "" {
+		return defaultAskScope
 	}
-	return cmdAskV2(ctx, query, alt, altLang, scope, profile, start)
+	return invocationScope
+}
+
+func runAsk(ctx context.Context, query, invocationScope, alt, altLang string, profile CorpusProfile, start time.Time) error {
+	return cmdAskV2(ctx, query, alt, altLang, askScope(invocationScope), profile, start)
 }
 
 // ─── add ──────────────────────────────────────────────────────────────────────
