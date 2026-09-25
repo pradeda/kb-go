@@ -19,8 +19,7 @@ type SecretPattern struct {
 	Name         string  `json:"name"`
 	Regex        string  `json:"regex"`
 	Placeholder  string  `json:"placeholder"`
-	Action       string  `json:"action"`     // "redact" | "log"
-	Confidence   string  `json:"confidence"` // "high" | "low"
+	Action       string  `json:"action"` // "redact" | "log"
 	CaptureGroup int     `json:"capture_group"`
 	MinLen       int     `json:"min_len"`
 	MinEntropy   float64 `json:"min_entropy"`
@@ -39,7 +38,6 @@ type SecretRules struct {
 type scanHit struct {
 	Pattern string
 	Action  string
-	Value   string
 }
 
 func sanitizeWrite(profile CorpusProfile, content, title string) (string, string, []scanHit, error) {
@@ -179,7 +177,7 @@ func (r *SecretRules) Sanitize(content string) (string, []scanHit) {
 				continue
 			}
 
-			hits = append(hits, scanHit{Pattern: p.Name, Action: p.Action, Value: value})
+			hits = append(hits, scanHit{Pattern: p.Name, Action: p.Action})
 			if p.Action == "redact" {
 				content = content[:start] + p.Placeholder + content[end:]
 			}

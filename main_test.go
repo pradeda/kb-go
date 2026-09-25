@@ -744,7 +744,7 @@ func TestRecordQuarantineAlignsOwnerAsRoot(t *testing.T) {
 		QuarantineDir: filepath.Join(corpusRoot, "quarantine"),
 		QuarantineLog: filepath.Join(corpusRoot, "quarantine.log"),
 	}
-	hits := []scanHit{{Pattern: "secret_assignment", Action: "redact", Value: "hunter2"}}
+	hits := []scanHit{{Pattern: "secret_assignment", Action: "redact"}}
 
 	backupPath := recordQuarantine(profile, "token = hunter2", "token = [REDACTED]", "cli", "note", hits)
 	if backupPath == "" {
