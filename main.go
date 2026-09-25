@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -355,12 +356,55 @@ func checkAddArgShape(args []string) error {
 	return nil
 }
 
+// addUsageExamples prints the three accepted argument shapes. Both rejection paths
+// used to carry their own copy of this text.
+func addUsageExamples() {
+	fmt.Fprintln(os.Stderr, "  kb add note \"content\" \"title\" \"tags\"")
+	fmt.Fprintln(os.Stderr, "  kb add note - \"title\" \"tags\"  (read content from stdin)")
+	fmt.Fprintln(os.Stderr, "  kb add url \"url\" \"title\" \"tags\"")
+}
+
+// rawEntry is the frontmatter payload of one write plus the path it belongs to.
+type rawEntry struct {
+	entryType string
+	title     string
+	tags      string
+	saved     string
+	content   string
+	subdir    string
+	stem      string
+}
+
+// writeRawEntry renders the frontmatter, prepares the corpus subdirectory with the
+// corpus mode and owner, and writes the body to a fresh file (never overwriting an
+// existing one). Returns the raw file path.
+func writeRawEntry(profile CorpusProfile, entry rawEntry) (string, error) {
+	rawSubdir := filepath.Join(profile.RawRoot, entry.subdir)
+	if err := os.MkdirAll(rawSubdir, 0700); err != nil {
+		return "", fmt.Errorf("creating %s: %w", rawSubdir, err)
+	}
+	if err := os.Chmod(rawSubdir, 0700); err != nil {
+		return "", fmt.Errorf("securing %s: %w", rawSubdir, err)
+	}
+	if err := alignOwnerWithDir(profile.RawRoot, rawSubdir); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: could not align owner of %s with %s: %v\n", rawSubdir, profile.RawRoot, err)
+	}
+	frontmatter := fmt.Sprintf(`---
+type: %s
+title: %s
+tags: %s
+saved: %s
+---
+
+%s
+`, entry.entryType, yamlQuote(entry.title), yamlQuote(entry.tags), entry.saved, entry.content)
+	return writeRawFileExclusive(rawSubdir, entry.stem, []byte(frontmatter))
+}
+
 func cmdAdd(ctx context.Context, args []string, profile CorpusProfile) {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "Usage: kb add <note|url> ...")
-		fmt.Fprintln(os.Stderr, "  kb add note \"content\" \"title\" \"tags\"")
-		fmt.Fprintln(os.Stderr, "  kb add note - \"title\" \"tags\"  (read content from stdin)")
-		fmt.Fprintln(os.Stderr, "  kb add url \"url\" \"title\" \"tags\"")
+		addUsageExamples()
 		os.Exit(1)
 	}
 
@@ -378,9 +422,7 @@ func cmdAdd(ctx context.Context, args []string, profile CorpusProfile) {
 	if err := checkAddArgShape(args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		fmt.Fprintln(os.Stderr, "kb add takes positional arguments only:")
-		fmt.Fprintln(os.Stderr, "  kb add note \"content\" \"title\" \"tags\"")
-		fmt.Fprintln(os.Stderr, "  kb add note - \"title\" \"tags\"  (read content from stdin)")
-		fmt.Fprintln(os.Stderr, "  kb add url \"url\" \"title\" \"tags\"")
+		addUsageExamples()
 		os.Exit(1)
 	}
 
@@ -461,29 +503,15 @@ func cmdAdd(ctx context.Context, args []string, profile CorpusProfile) {
 		subdir = "urls"
 	}
 
-	rawSubdir := fmt.Sprintf("%s/%s", profile.RawRoot, subdir)
-	if err := os.MkdirAll(rawSubdir, 0700); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating directory: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.Chmod(rawSubdir, 0700); err != nil {
-		fmt.Fprintf(os.Stderr, "Error securing directory: %v\n", err)
-		os.Exit(1)
-	}
-	if err := alignOwnerWithDir(profile.RawRoot, rawSubdir); err != nil {
-		fmt.Fprintf(os.Stderr, "warn: could not align owner of %s with %s: %v\n", rawSubdir, profile.RawRoot, err)
-	}
-
-	frontmatter := fmt.Sprintf(`---
-type: %s
-title: %s
-tags: %s
-saved: %s
----
-
-%s
-`, entryType, yamlQuote(title), yamlQuote(tags), ts, content)
-	rawPath, err := writeRawFileExclusive(rawSubdir, fmt.Sprintf("%s-%s", dateStr, slug), []byte(frontmatter))
+	rawPath, err := writeRawEntry(profile, rawEntry{
+		entryType: entryType,
+		title:     title,
+		tags:      tags,
+		saved:     ts,
+		content:   content,
+		subdir:    subdir,
+		stem:      fmt.Sprintf("%s-%s", dateStr, slug),
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
 		os.Exit(1)

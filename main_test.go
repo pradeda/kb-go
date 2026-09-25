@@ -592,6 +592,62 @@ func TestWriteRawFileExclusiveCreatesPrivateUniqueFiles(t *testing.T) {
 	}
 }
 
+// writeRawEntry owns the subdirectory mode/owner and the frontmatter rendering that
+// cmdAdd used to do inline; both writers of a corpus raw tree must agree on the shape.
+func TestWriteRawEntryRendersFrontmatterIntoAPrivateDirectory(t *testing.T) {
+	root := t.TempDir()
+	profile := CorpusProfile{Name: "homelab", RawRoot: root}
+	entry := rawEntry{
+		entryType: "note",
+		title:     `Quote " and colon:`,
+		tags:      "a,b",
+		saved:     "2026-09-25T20:00:00",
+		content:   "body text",
+		subdir:    "notes",
+		stem:      "2026-09-25-slug",
+	}
+
+	path, err := writeRawEntry(profile, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(path) != filepath.Join(root, "notes") {
+		t.Errorf("path %s is not inside the corpus notes directory", path)
+	}
+	if info, err := os.Stat(filepath.Dir(path)); err != nil || info.Mode().Perm() != 0o700 {
+		t.Errorf("notes directory mode = %v (err %v), want 0700", info.Mode().Perm(), err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("raw file mode = %v (err %v), want 0600", info.Mode().Perm(), err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"type: note", `title: "Quote \" and colon:"`, "tags: \"a,b\"", "saved: 2026-09-25T20:00:00", "body text"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("frontmatter missing %q in:\n%s", want, text)
+		}
+	}
+
+	// A second write of the same stem must not touch the first file.
+	second, err := writeRawEntry(profile, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == path {
+		t.Fatalf("second write reused %s", path)
+	}
+	again, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != text {
+		t.Error("the first raw file was modified by the second write")
+	}
+}
+
 func TestStreamCompletionRequiresDone(t *testing.T) {
 	complete := "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
 	if err := streamCompletion(context.Background(), strings.NewReader(complete), time.Now()); err != nil {
