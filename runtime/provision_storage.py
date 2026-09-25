@@ -10,6 +10,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+import corpora
+
 
 _HERE = Path(__file__).resolve().parent
 SCHEMA = next(
@@ -24,21 +26,23 @@ CHROMA_HOST = "localhost"
 CHROMA_PORT = 8000
 RUNTIME_USER = "turok"
 
+# Storage identity comes from corpora.py; only the raw subtree layout below is
+# provisioner-specific.
 PROFILES = {
     "homelab": {
-        "db": Path("/opt/kb/kb.db"),
-        "collection": "kb_collection",
+        "db": Path(corpora.CORPORA["homelab"]["db"]),
+        "collection": corpora.CORPORA["homelab"]["collection"],
     },
     "ai": {
-        "root": Path("/opt/ai-kb"),
-        "db": Path("/opt/ai-kb/ai-kb.db"),
+        "root": Path(corpora.CORPORA["ai"]["root"]),
+        "db": Path(corpora.CORPORA["ai"]["db"]),
         "raw_dirs": (
-            Path("/opt/ai-kb/raw"),
-            Path("/opt/ai-kb/raw/notes"),
-            Path("/opt/ai-kb/raw/urls"),
-            Path("/opt/ai-kb/quarantine"),
+            Path(corpora.CORPORA["ai"]["raw"]),
+            Path(corpora.CORPORA["ai"]["raw"]) / "notes",
+            Path(corpora.CORPORA["ai"]["raw"]) / "urls",
+            Path(corpora.CORPORA["ai"]["quarantine_dir"]),
         ),
-        "collection": "ai_kb_collection",
+        "collection": corpora.CORPORA["ai"]["collection"],
     },
 }
 

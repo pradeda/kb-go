@@ -29,6 +29,7 @@ PYTEST   = PYTHONPATH=$(RUNTIME) /usr/bin/python3 -m unittest discover -s tests 
 # its own service. Everything else deploys as root.
 DEPLOY_MANIFEST = \
 	runtime/compile.py:/opt/kb/compile.py:755:root \
+	runtime/corpora.py:/opt/kb/corpora.py:644:root \
 	runtime/supersede_index.py:/opt/kb/supersede_index.py:644:root \
 	config/secret_patterns.json:/opt/kb/secret_patterns.json:644:root \
 	runtime/embed_daemon.py:/opt/kb/embed_daemon.py:644:root \

@@ -10,37 +10,14 @@ import sqlite3, os, re, json, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import corpora  # corpus identity (same dir: /opt/kb)
 import supersede_index  # supersede link index (same dir: /opt/kb)
 
 # --- configuration ---
-CORPUS_PROFILES = {
-    "homelab": {
-        "root": "/opt/kb",
-        "db": "/opt/kb/kb.db",
-        "raw": "/opt/kb/raw",
-        "env": "/opt/kb/.env",
-        "collection": "kb_collection",
-        "wiki_index": "/opt/kb/wiki/index.md",
-        "secret_patterns": "/opt/kb/secret_patterns.json",
-        "quarantine_dir": "/opt/kb/quarantine",
-        "quarantine_log": "/opt/kb/quarantine.log",
-        "watcher_lock": "/tmp/kb-watcher.lock",
-        "watcher_state": "/tmp/kb-watcher-last",
-    },
-    "ai": {
-        "root": "/opt/ai-kb",
-        "db": "/opt/ai-kb/ai-kb.db",
-        "raw": "/opt/ai-kb/raw",
-        "env": "/opt/ai-kb/.env",
-        "collection": "ai_kb_collection",
-        "wiki_index": "",
-        "secret_patterns": "/opt/ai-kb/secret_patterns.json",
-        "quarantine_dir": "/opt/ai-kb/quarantine",
-        "quarantine_log": "/opt/ai-kb/quarantine.log",
-        "watcher_lock": "/tmp/ai-kb-watcher.lock",
-        "watcher_state": "/tmp/ai-kb-watcher-last",
-    },
-}
+# Corpus identity lives in corpora.py so a path or collection name has one
+# definition; profiles() returns a copy because the isolation override below
+# mutates it.
+CORPUS_PROFILES = corpora.profiles()
 
 ISOLATION_VARS = (
     "KB_HOMELAB_DB", "KB_HOMELAB_RAW", "KB_HOMELAB_QUARANTINE", "KB_HOMELAB_ENV",
