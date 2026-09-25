@@ -263,14 +263,26 @@ func recordQuarantine(profile CorpusProfile, orig, cleaned, source, slug string,
 					fmt.Fprintf(os.Stderr, "warn: could not align owner of %s with %s: %v\n", backupPath, profile.QuarantineDir, err)
 				}
 			}
+		} else {
+			// Silent here would mean `kb add` claims to have kept the original
+			// while it kept nothing (compile.py Gate 2 warns for the same case).
+			fmt.Fprintf(os.Stderr, "warn: quarantine directory unavailable (%s): %v — the pre-redaction original is NOT saved\n",
+				profile.QuarantineDir, err)
 		}
 	}
 
 	line := fmt.Sprintf("%s source=%s hits=%s backup=%s\n",
 		ts, source, strings.Join(names, ","), backupPath)
-	if f, err := os.OpenFile(profile.QuarantineLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); err == nil {
-		f.WriteString(line)
-		f.Close()
+	if f, err := os.OpenFile(profile.QuarantineLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: quarantine log unavailable (%s): %v — this redaction is not audited\n",
+			profile.QuarantineLog, err)
+	} else {
+		if _, err := f.WriteString(line); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: quarantine log write failed (%s): %v\n", profile.QuarantineLog, err)
+		}
+		if err := f.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: quarantine log close failed (%s): %v\n", profile.QuarantineLog, err)
+		}
 		if err := alignOwnerWithDir(corpusRoot, profile.QuarantineLog); err != nil {
 			fmt.Fprintf(os.Stderr, "warn: could not align owner of %s with %s: %v\n", profile.QuarantineLog, corpusRoot, err)
 		}

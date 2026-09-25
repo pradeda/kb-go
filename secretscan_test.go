@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -259,6 +260,82 @@ func TestQuarantinePayloadKeepsOriginalTitle(t *testing.T) {
 }
 
 // End of Gate 1 title coverage.
+
+// captureStderr runs fn with os.Stderr redirected to a pipe and returns everything
+// written to it. recordQuarantine reports its failures on stderr, so this is how a
+// swallowed failure is told apart from a reported one.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stderr
+	os.Stderr = writer
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(reader)
+		done <- string(data)
+	}()
+	fn()
+	os.Stderr = original
+	writer.Close()
+	out := <-done
+	reader.Close()
+	return out
+}
+
+// Every failure on the quarantine path has to be visible. Before this, an
+// unusable quarantine directory or audit log produced an empty stderr and an
+// empty backup path, so `kb add` looked like it had saved the original when it
+// had not.
+func TestQuarantineFailuresAreReported(t *testing.T) {
+	hits := []scanHit{{Pattern: "password_assign", Action: "redact"}}
+
+	t.Run("directory cannot be created", func(t *testing.T) {
+		root := t.TempDir()
+		blocker := filepath.Join(root, "blocker")
+		if err := os.WriteFile(blocker, []byte("not a directory"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		profile := CorpusProfile{
+			QuarantineDir: filepath.Join(blocker, "quarantine"),
+			QuarantineLog: filepath.Join(root, "quarantine.log"),
+		}
+		var backup string
+		stderr := captureStderr(t, func() {
+			backup = recordQuarantine(profile, "original body", "cleaned body", "cli", "note", hits)
+		})
+		if backup != "" {
+			t.Errorf("backup path = %q, want empty when the directory is unusable", backup)
+		}
+		if !strings.Contains(stderr, "quarantine") {
+			t.Errorf("stderr = %q, want a visible warning about the quarantine directory", stderr)
+		}
+	})
+
+	t.Run("audit log cannot be opened", func(t *testing.T) {
+		root := t.TempDir()
+		blocker := filepath.Join(root, "blocker")
+		if err := os.WriteFile(blocker, []byte("not a directory"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		profile := CorpusProfile{
+			QuarantineDir: filepath.Join(root, "quarantine"),
+			QuarantineLog: filepath.Join(blocker, "quarantine.log"),
+		}
+		var backup string
+		stderr := captureStderr(t, func() {
+			backup = recordQuarantine(profile, "original body", "cleaned body", "cli", "note", hits)
+		})
+		if backup == "" {
+			t.Fatal("backup was not written even though only the log path is unusable")
+		}
+		if !strings.Contains(stderr, "quarantine log") {
+			t.Errorf("stderr = %q, want a visible warning about the quarantine log", stderr)
+		}
+	})
+}
 
 // Two `kb add` runs in the same second with the same title must not destroy each
 // other's pre-redaction original. The backup name used to be
