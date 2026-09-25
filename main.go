@@ -732,14 +732,7 @@ func cmdRetire(ctx context.Context, args []string, profile CorpusProfile) {
 		}
 	}
 
-	argv := profile.compileArgv("--retire", strconv.FormatInt(id, 10))
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "retire failed (%s): %v\n", strings.Join(argv, " "), err)
-		os.Exit(1)
-	}
+	runCompile(ctx, profile, "retire", "--retire", strconv.FormatInt(id, 10))
 }
 
 // ─── supersede ──────────────────────────────────────────────────────────────
@@ -792,14 +785,8 @@ func cmdSupersede(ctx context.Context, args []string, profile CorpusProfile) {
 		}
 	}
 
-	argv := profile.compileArgv("--supersede", strconv.FormatInt(id, 10), "--replacement", replacement)
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "supersede failed (%s): %v\n", strings.Join(argv, " "), err)
-		os.Exit(1)
-	}
+	runCompile(ctx, profile, "supersede",
+		"--supersede", strconv.FormatInt(id, 10), "--replacement", replacement)
 }
 
 func stdinIsTerminal() bool {
@@ -841,14 +828,7 @@ func cmdHistory(ctx context.Context, args []string, profile CorpusProfile) {
 	if !stdoutIsTerminal() {
 		extra = append(extra, "--json")
 	}
-	argv := profile.compileArgv(extra...)
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "history failed (%s): %v\n", strings.Join(argv, " "), err)
-		os.Exit(1)
-	}
+	runCompile(ctx, profile, "history", extra...)
 }
 
 // ─── rebuild-supersede-index ────────────────────────────────────────────────
@@ -859,17 +839,25 @@ func cmdHistory(ctx context.Context, args []string, profile CorpusProfile) {
 // it is the bootstrap step after deploy. Thin wrapper over compile.py, which
 // marks the index valid only on a successful rebuild.
 func cmdRebuildSupersedeIndex(ctx context.Context, profile CorpusProfile) {
-	argv := profile.compileArgv("--rebuild-supersede-index")
+	runCompile(ctx, profile, "rebuild-supersede-index", "--rebuild-supersede-index")
+}
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+// runCompile runs compile.py for this corpus, streaming both streams to the caller,
+// and exits non-zero with the exact argv when it fails. Every CLI command that
+// reaches the KB through compile.py goes through here so the four call sites cannot
+// drift apart in how they bind stdout/stderr or report a failure.
+func runCompile(ctx context.Context, profile CorpusProfile, label string, extra ...string) {
+	argv := profile.compileArgv(extra...)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "rebuild-supersede-index failed (%s): %v\n", strings.Join(argv, " "), err)
+		fmt.Fprintf(os.Stderr, "%s failed (%s): %v\n", label, strings.Join(argv, " "), err)
 		os.Exit(1)
 	}
 }
-
-// ─── helpers ──────────────────────────────────────────────────────────────────
 
 // slugify transliterates Serbian Latin and Cyrillic characters to ASCII and produces a URL-safe slug.
 func slugify(s string) string {
