@@ -259,3 +259,36 @@ func TestQuarantinePayloadKeepsOriginalTitle(t *testing.T) {
 }
 
 // End of Gate 1 title coverage.
+
+// Two `kb add` runs in the same second with the same title must not destroy each
+// other's pre-redaction original. The backup name used to be
+// "%Y%m%d-%H%M%S-<slug>.orig" and the file was written with os.WriteFile, which
+// truncates: the second run overwrote the first .orig while both audit lines
+// pointed at the same path.
+func TestQuarantineBackupsDoNotCollideInTheSameSecond(t *testing.T) {
+	corpusRoot := t.TempDir()
+	profile := CorpusProfile{
+		QuarantineDir: filepath.Join(corpusRoot, "quarantine"),
+		QuarantineLog: filepath.Join(corpusRoot, "quarantine.log"),
+	}
+	hits := []scanHit{{Pattern: "password_assign", Action: "redact"}}
+
+	first := recordQuarantine(profile, "first original body", "first [REDACTED] body", "cli", "same-slug", hits)
+	second := recordQuarantine(profile, "second original body", "second [REDACTED] body", "cli", "same-slug", hits)
+
+	if first == "" || second == "" {
+		t.Fatalf("missing backup: first=%q second=%q", first, second)
+	}
+	if first == second {
+		t.Fatalf("both adds wrote the same backup path %s: the first original is gone", first)
+	}
+	for path, want := range map[string]string{first: "first original body", second: "second original body"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(data), want) {
+			t.Errorf("%s = %q, want it to contain %q", path, data, want)
+		}
+	}
+}

@@ -204,6 +204,37 @@ func (r *SecretRules) Sanitize(content string) (string, []scanHit) {
 	return content, hits
 }
 
+// createQuarantineBackup writes the pre-redaction text to a file that did not
+// exist before. The name is derived from the second plus the slug, and a collision
+// (two adds in the same second with the same title) gets a numeric suffix instead
+// of overwriting: an .orig that silently replaced an earlier one would destroy the
+// only copy of that original while the audit log still claimed both were saved.
+func createQuarantineBackup(dir, stem, content string) (string, error) {
+	for attempt := 1; attempt <= 1000; attempt++ {
+		name := stem + ".orig"
+		if attempt > 1 {
+			name = fmt.Sprintf("%s-%d.orig", stem, attempt)
+		}
+		path := filepath.Join(dir, name)
+		handle, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if _, err := handle.WriteString(content); err != nil {
+			handle.Close()
+			return "", err
+		}
+		if err := handle.Close(); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
+	return "", fmt.Errorf("no free quarantine backup name for %s", stem)
+}
+
 // recordQuarantine backs up the original content (when it was mutated) and
 // appends one audit line. No queue, no notification — just a trail.
 func recordQuarantine(profile CorpusProfile, orig, cleaned, source, slug string, hits []scanHit) (backupPath string) {
@@ -223,13 +254,14 @@ func recordQuarantine(profile CorpusProfile, orig, cleaned, source, slug string,
 			if err := alignOwnerWithDir(corpusRoot, profile.QuarantineDir); err != nil {
 				fmt.Fprintf(os.Stderr, "warn: could not align owner of %s with %s: %v\n", profile.QuarantineDir, corpusRoot, err)
 			}
-			backupPath = filepath.Join(profile.QuarantineDir,
-				fmt.Sprintf("%s-%s.orig", time.Now().Format("20060102-150405"), slug))
-			if err := os.WriteFile(backupPath, []byte(orig), 0600); err != nil {
-				fmt.Fprintf(os.Stderr, "warn: quarantine backup failed: %v\n", err)
-				backupPath = ""
-			} else if err := alignOwnerWithDir(profile.QuarantineDir, backupPath); err != nil {
-				fmt.Fprintf(os.Stderr, "warn: could not align owner of %s with %s: %v\n", backupPath, profile.QuarantineDir, err)
+			if path, backupErr := createQuarantineBackup(profile.QuarantineDir,
+				fmt.Sprintf("%s-%s", time.Now().Format("20060102-150405"), slug), orig); backupErr != nil {
+				fmt.Fprintf(os.Stderr, "warn: quarantine backup failed: %v\n", backupErr)
+			} else {
+				backupPath = path
+				if err := alignOwnerWithDir(profile.QuarantineDir, backupPath); err != nil {
+					fmt.Fprintf(os.Stderr, "warn: could not align owner of %s with %s: %v\n", backupPath, profile.QuarantineDir, err)
+				}
 			}
 		}
 	}
