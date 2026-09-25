@@ -648,6 +648,23 @@ func TestWriteRawEntryRendersFrontmatterIntoAPrivateDirectory(t *testing.T) {
 	}
 }
 
+// One knob for both synthesis call sites: the CLI prefers OPENROUTER_MODEL, then the
+// KB_SYNTHESIS_MODEL the search service's synthesis endpoint reads, then its built-in
+// default so a bare CLI still works.
+func TestResolveModelPrefersOpenRouterThenSynthesisThenDefault(t *testing.T) {
+	for _, tc := range []struct {
+		openRouter, synthesis, want string
+	}{
+		{"openai/gpt-5.2", "google/gemini-2.5-flash-lite", "openai/gpt-5.2"},
+		{"", "anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4"},
+		{"", "", defaultModel},
+	} {
+		if got := resolveModel(tc.openRouter, tc.synthesis); got != tc.want {
+			t.Errorf("resolveModel(%q, %q) = %q, want %q", tc.openRouter, tc.synthesis, got, tc.want)
+		}
+	}
+}
+
 func TestStreamCompletionRequiresDone(t *testing.T) {
 	complete := "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
 	if err := streamCompletion(context.Background(), strings.NewReader(complete), time.Now()); err != nil {

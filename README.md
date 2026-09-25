@@ -137,6 +137,10 @@ server-side bilingual-union flag is enabled, the Homelab Layer-1 candidates from
 both forms are unioned and reranked once with the original question. AI retrieval
 is unchanged; omitting the pair preserves single-query retrieval.
 
+The OpenRouter model for `kb ask` is resolved as `OPENROUTER_MODEL` → `KB_SYNTHESIS_MODEL`
+(the same variable the search service's synthesis endpoint reads, so one setting covers
+both) → the built-in default, which keeps a bare CLI working with no configuration.
+
 Results are ranked by a 4-layer pipeline (see Architecture above). The final score combines cross-encoder relevance with time decay:
 
 ```

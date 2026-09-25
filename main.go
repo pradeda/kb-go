@@ -1049,10 +1049,7 @@ func callOpenRouter(ctx context.Context, prompt string, start time.Time) error {
 		return fmt.Errorf("OPENROUTER_API_KEY not set")
 	}
 
-	modelToUse := os.Getenv("OPENROUTER_MODEL")
-	if modelToUse == "" {
-		modelToUse = defaultModel
-	}
+	modelToUse := resolveModel(os.Getenv("OPENROUTER_MODEL"), os.Getenv("KB_SYNTHESIS_MODEL"))
 
 	fmt.Fprintf(os.Stderr, "[%v] Calling OpenRouter (%s)...\n",
 		time.Since(start).Round(time.Millisecond), modelToUse)
@@ -1118,6 +1115,20 @@ func callOpenRouter(ctx context.Context, prompt string, start time.Time) error {
 	// than an error path - the message it replaces ("rate limited after retry") read
 	// like a real outcome and could never be returned.
 	panic("callOpenRouter: retry loop exited without a response")
+}
+
+// resolveModel picks the OpenRouter model for a `kb ask`: OPENROUTER_MODEL wins, then
+// KB_SYNTHESIS_MODEL - the same variable the search service's synthesis endpoint reads,
+// so one operator setting covers both call sites - and finally the built-in default,
+// because a CLI must still work with no configuration at all.
+func resolveModel(openRouterModel, synthesisModel string) string {
+	if openRouterModel != "" {
+		return openRouterModel
+	}
+	if synthesisModel != "" {
+		return synthesisModel
+	}
+	return defaultModel
 }
 
 // streamCompletion prints the SSE stream from OpenRouter. Chunk is declared inside
