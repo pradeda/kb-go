@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -30,9 +31,16 @@ type CorpusProfile struct {
 // an isolated run (tests, the Go entry-point test) can never fall through to a
 // production path. compile.py's _apply_isolation_env mirrors this list exactly,
 // so the Go binary and every compile.py subprocess it spawns resolve identical
-// paths. The corpora keep SEPARATE raw roots in production, so raw is overridden
-// per corpus rather than through one shared KB_RAW.
-var isolationVars = []string{"KB_HOMELAB_DB", "KB_AI_DB", "KB_HOMELAB_RAW", "KB_AI_RAW"}
+// paths; the list is bound by tests/test_isolation_contract.py.
+//
+// It covers every path a write can touch: the corpus database, the raw tree, the
+// quarantine directory (whose audit log follows it by construction) and the
+// environment file. The corpora keep SEPARATE raw roots in production, so raw is
+// overridden per corpus rather than through one shared KB_RAW.
+var isolationVars = []string{
+	"KB_HOMELAB_DB", "KB_HOMELAB_RAW", "KB_HOMELAB_QUARANTINE", "KB_HOMELAB_ENV",
+	"KB_AI_DB", "KB_AI_RAW", "KB_AI_QUARANTINE", "KB_AI_ENV",
+}
 
 // isolationOverride returns nil for production paths (no vars set) or the full
 // override map, and errors on a partial set rather than silently using prod.
@@ -104,10 +112,18 @@ func corpusProfile(name string) (CorpusProfile, error) {
 		case "homelab":
 			p.DBPath = ov["KB_HOMELAB_DB"]
 			p.RawRoot = ov["KB_HOMELAB_RAW"]
+			p.QuarantineDir = ov["KB_HOMELAB_QUARANTINE"]
+			p.EnvFile = ov["KB_HOMELAB_ENV"]
 		case "ai":
 			p.DBPath = ov["KB_AI_DB"]
 			p.RawRoot = ov["KB_AI_RAW"]
+			p.QuarantineDir = ov["KB_AI_QUARANTINE"]
+			p.EnvFile = ov["KB_AI_ENV"]
 		}
+		// The audit log is the sibling of its directory in production
+		// (…/quarantine + …/quarantine.log), so deriving it keeps the whole
+		// quarantine path isolated once the directory is named.
+		p.QuarantineLog = filepath.Join(filepath.Dir(p.QuarantineDir), "quarantine.log")
 	}
 	return p, nil
 }
