@@ -169,7 +169,7 @@ func parseInvocation(args []string) (commandInvocation, error) {
 				index++
 			}
 		}
-	} else if command != "ask" && len(commandArgs) > 0 &&
+	} else if len(commandArgs) > 0 &&
 		(commandArgs[0] == "--corpus" || strings.HasPrefix(commandArgs[0], "--corpus=")) {
 		flagArgs = commandArgs
 	}
@@ -439,13 +439,9 @@ func cmdAdd(ctx context.Context, args []string, profile CorpusProfile) {
 	now := time.Now()
 	ts := now.Format("2006-01-02T15:04:05")
 	dateStr := now.Format("2006-01-02")
+	// slugify already answers "untitled" when nothing usable survives, so it never
+	// returns an empty slug and there is no second source to fall back to here.
 	slug := slugify(title)
-	if slug == "" {
-		slug = slugify(content)
-	}
-	if slug == "" {
-		slug = "untitled"
-	}
 
 	if len(scanHits) > 0 {
 		backup := recordQuarantine(profile, quarantinePayload(origTitle, origContent, title, content), content, "cli", slug, scanHits)
@@ -720,17 +716,7 @@ func cmdRetire(ctx context.Context, args []string, profile CorpusProfile) {
 		fmt.Fprintf(os.Stderr, "retire %s:%d — no SQLite row; continuing in case a Chroma vector is orphaned\n", profile.Name, id)
 	}
 
-	// Confirm only when a human is watching. Scripts and the MCP server run
-	// without a terminal and must not block, but an interactive typo should not
-	// be able to delete the wrong entry in one keystroke.
-	if stdinIsTerminal() {
-		fmt.Fprint(os.Stderr, "Delete permanently? [y/N] ")
-		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
-			fmt.Fprintln(os.Stderr, "Aborted.")
-			os.Exit(1)
-		}
-	}
+	confirm("Delete permanently?")
 
 	runCompile(ctx, profile, "retire", "--retire", strconv.FormatInt(id, 10))
 }
@@ -774,35 +760,36 @@ func cmdSupersede(ctx context.Context, args []string, profile CorpusProfile) {
 	}
 	fmt.Fprintf(os.Stderr, "supersede %s:%d — %s  →  %s\n", profile.Name, id, title, replacement)
 
-	// Confirm only when a human is watching; scripts and the MCP server run
-	// without a terminal and must not block.
-	if stdinIsTerminal() {
-		fmt.Fprint(os.Stderr, "Mark superseded? [y/N] ")
-		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
-			fmt.Fprintln(os.Stderr, "Aborted.")
-			os.Exit(1)
-		}
-	}
+	confirm("Mark superseded?")
 
 	runCompile(ctx, profile, "supersede",
 		"--supersede", strconv.FormatInt(id, 10), "--replacement", replacement)
 }
 
-func stdinIsTerminal() bool {
-	info, err := os.Stdin.Stat()
+// isTerminal reports whether f is attached to a character device, i.e. a
+// terminal. Callers use it to tell a human apart from a pipe or a redirect.
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
 	if err != nil {
 		return false
 	}
 	return info.Mode()&os.ModeCharDevice != 0
 }
 
-func stdoutIsTerminal() bool {
-	info, err := os.Stdout.Stat()
-	if err != nil {
-		return false
+// confirm asks a y/N question on stderr and exits non-zero unless the answer is
+// yes. Only a human at a terminal is asked: scripts and the MCP server run
+// without one and must not block, while an interactive typo must not destroy an
+// entry in one keystroke.
+func confirm(prompt string) {
+	if !isTerminal(os.Stdin) {
+		return
 	}
-	return info.Mode()&os.ModeCharDevice != 0
+	fmt.Fprintf(os.Stderr, "%s [y/N] ", prompt)
+	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
+		fmt.Fprintln(os.Stderr, "Aborted.")
+		os.Exit(1)
+	}
 }
 
 // ─── history ──────────────────────────────────────────────────────────────
@@ -825,7 +812,7 @@ func cmdHistory(ctx context.Context, args []string, profile CorpusProfile) {
 		os.Exit(1)
 	}
 	extra := []string{"--history", ref}
-	if !stdoutIsTerminal() {
+	if !isTerminal(os.Stdout) {
 		extra = append(extra, "--json")
 	}
 	runCompile(ctx, profile, "history", extra...)
@@ -881,10 +868,8 @@ func slugify(s string) string {
 	}
 	out := strings.Trim(result.String(), "-")
 	if len(out) > 60 {
-		runes := []rune(out)
-		if len(runes) > 60 {
-			out = string(runes[:60])
-		}
+		// Everything kept above is [a-z0-9-], so the byte index equals the rune index.
+		out = out[:60]
 	}
 	if out == "" {
 		out = "untitled"
