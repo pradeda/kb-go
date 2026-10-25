@@ -57,19 +57,6 @@ func sanitizeWrite(profile CorpusProfile, content, title string) (string, string
 	return cleanedContent, cleanedTitle, hits, nil
 }
 
-// quarantinePayload renders the pre-redaction record for the .orig backup: the
-// original content, prefixed with the original title when the scanner mutated the
-// title too. Without this the title's original text would be lost - the raw file
-// and SQLite both hold the redacted title.
-//
-// compile.py Gate 2 renders the same shape (_quarantine_payload) for the fields it
-// has: title, summary, content.
-func quarantinePayload(origTitle, origContent, cleanedTitle, cleanedContent string) string {
-	if origTitle != cleanedTitle {
-		return fmt.Sprintf("title: %s\n\n%s", origTitle, origContent)
-	}
-	return origContent
-}
 
 func loadSecretRules(path string) (*SecretRules, error) {
 	data, err := os.ReadFile(path)
@@ -204,75 +191,18 @@ func (r *SecretRules) Sanitize(content string) (string, []scanHit) {
 	return content, hits
 }
 
-// createQuarantineBackup writes the pre-redaction text to a file that did not
-// exist before. The name is derived from the second plus the slug, and a collision
-// (two adds in the same second with the same title) gets a numeric suffix instead
-// of overwriting: an .orig that silently replaced an earlier one would destroy the
-// only copy of that original while the audit log still claimed both were saved.
-func createQuarantineBackup(dir, stem, content string) (string, error) {
-	for attempt := 1; attempt <= 1000; attempt++ {
-		name := stem + ".orig"
-		if attempt > 1 {
-			name = fmt.Sprintf("%s-%d.orig", stem, attempt)
-		}
-		path := filepath.Join(dir, name)
-		handle, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if os.IsExist(err) {
-			continue
-		}
-		if err != nil {
-			return "", err
-		}
-		if _, err := handle.WriteString(content); err != nil {
-			handle.Close()
-			return "", err
-		}
-		if err := handle.Close(); err != nil {
-			return "", err
-		}
-		return path, nil
-	}
-	return "", fmt.Errorf("no free quarantine backup name for %s", stem)
-}
-
-// recordQuarantine backs up the original content (when it was mutated) and
-// appends one audit line. No queue, no notification — just a trail.
-func recordQuarantine(profile CorpusProfile, orig, cleaned, source, slug string, hits []scanHit) (backupPath string) {
+// recordQuarantine appends one audit line with metadata only to the quarantine log.
+// No pre-redaction plaintext is written; no review queue or notification — just a trail.
+func recordQuarantine(profile CorpusProfile, source, ref string, hits []scanHit) {
 	ts := time.Now().Format("2006-01-02T15:04:05")
 	names := make([]string, 0, len(hits))
 	for _, h := range hits {
 		names = append(names, h.Pattern+":"+h.Action)
 	}
 
-	// Every path created here gets the corpus owner, not root. A sudo-run
-	// `kb add` that trips the scanner used to leave a root-owned 0600 .orig
-	// behind, and the turok cron rsync in kb-backup.sh died on it (2026-08-11).
 	corpusRoot := filepath.Dir(profile.QuarantineDir)
-
-	if orig != cleaned {
-		if err := os.MkdirAll(profile.QuarantineDir, 0700); err == nil {
-			if err := alignOwnerWithDir(corpusRoot, profile.QuarantineDir); err != nil {
-				fmt.Fprintf(os.Stderr, "warn: could not align owner of %s with %s: %v\n", profile.QuarantineDir, corpusRoot, err)
-			}
-			if path, backupErr := createQuarantineBackup(profile.QuarantineDir,
-				fmt.Sprintf("%s-%s", time.Now().Format("20060102-150405"), slug), orig); backupErr != nil {
-				fmt.Fprintf(os.Stderr, "warn: quarantine backup failed: %v\n", backupErr)
-			} else {
-				backupPath = path
-				if err := alignOwnerWithDir(profile.QuarantineDir, backupPath); err != nil {
-					fmt.Fprintf(os.Stderr, "warn: could not align owner of %s with %s: %v\n", backupPath, profile.QuarantineDir, err)
-				}
-			}
-		} else {
-			// Silent here would mean `kb add` claims to have kept the original
-			// while it kept nothing (compile.py Gate 2 warns for the same case).
-			fmt.Fprintf(os.Stderr, "warn: quarantine directory unavailable (%s): %v — the pre-redaction original is NOT saved\n",
-				profile.QuarantineDir, err)
-		}
-	}
-
-	line := fmt.Sprintf("%s source=%s hits=%s backup=%s\n",
-		ts, source, strings.Join(names, ","), backupPath)
+	line := fmt.Sprintf("%s id=%s source=%s hits=%s\n",
+		ts, ref, source, strings.Join(names, ","))
 	if f, err := os.OpenFile(profile.QuarantineLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: quarantine log unavailable (%s): %v — this redaction is not audited\n",
 			profile.QuarantineLog, err)
@@ -287,5 +217,4 @@ func recordQuarantine(profile CorpusProfile, orig, cleaned, source, slug string,
 			fmt.Fprintf(os.Stderr, "warn: could not align owner of %s with %s: %v\n", profile.QuarantineLog, corpusRoot, err)
 		}
 	}
-	return backupPath
 }

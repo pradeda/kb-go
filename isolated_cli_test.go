@@ -154,15 +154,24 @@ func TestIsolatedAddQuarantinesATitleOnlySecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(backups) != 1 {
-		t.Fatalf("quarantine backups = %v, want exactly one in %s", backups, quarantine)
+	if len(backups) != 0 {
+		t.Fatalf("quarantine backups = %v, want none (no plaintext archive)", backups)
 	}
-	payload, err := os.ReadFile(backups[0])
+
+	logPath := filepath.Join(filepath.Dir(quarantine), "quarantine.log")
+	logData, err := os.ReadFile(logPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read quarantine log: %v", err)
 	}
-	if !strings.Contains(string(payload), secretTitle) {
-		t.Errorf("backup %s = %q, want it to contain the original title", backups[0], payload)
+	logStr := string(logData)
+	if strings.Contains(logStr, secretTitle) || strings.Contains(logStr, "hunter2xyz") {
+		t.Errorf("quarantine log leaked secret: %q", logStr)
+	}
+	if !strings.Contains(logStr, "source=cli") {
+		t.Errorf("quarantine log missing source=cli: %q", logStr)
+	}
+	if strings.Contains(logStr, "backup=") {
+		t.Errorf("quarantine log contains backup=: %q", logStr)
 	}
 
 	// The production quarantine and the production env file were not touched.
@@ -194,7 +203,7 @@ func productionQuarantineState(t *testing.T) string {
 		t.Skipf("production profile unavailable: %v", err)
 	}
 	entries, err := os.ReadDir(profile.QuarantineDir)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		t.Skipf("production quarantine unreadable: %v", err)
 	}
 	info, err := os.Stat(profile.QuarantineLog)

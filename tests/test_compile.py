@@ -1,6 +1,7 @@
 import importlib.util
 import contextlib
 import io
+import json
 import pathlib
 import sqlite3
 import subprocess
@@ -362,16 +363,44 @@ class Gate2QuarantineTests(unittest.TestCase):
         self.assertIn("<REDACTED_SECRET>", title)
         self.assertEqual(content, "clean body")
 
-        backups = sorted(kb_compile.QUARANTINE_DIR.glob("*.orig"))
-        self.assertEqual(len(backups), 1, "title-only secret produced no .orig backup")
-        payload = backups[0].read_text(encoding="utf-8")
-        self.assertIn(SECRET_TITLE, payload, "the pre-redaction title was not preserved")
-        self.assertIn("clean body", payload)
+        # In-place raw redaction preserved
+        raw_text = self.raw_path.read_text(encoding="utf-8")
+        self.assertNotIn("hunter2xyz", raw_text)
+
+        # No .orig backup written (no plaintext quarantine)
+        backups = list(kb_compile.QUARANTINE_DIR.glob("*.orig")) if kb_compile.QUARANTINE_DIR.exists() else []
+        self.assertEqual(len(backups), 0, "plaintext .orig backup must not be written")
+
+        # Audit line in quarantine.log with metadata only
+        self.assertTrue(kb_compile.QUARANTINE_LOG.exists(), "quarantine log not written")
+        log_payload = kb_compile.QUARANTINE_LOG.read_text(encoding="utf-8")
+        self.assertIn("id=1", log_payload)
+        self.assertIn("source=compile", log_payload)
+        self.assertIn("secret_assignment:redact", log_payload)
+        self.assertNotIn("backup=", log_payload)
+        self.assertNotIn("hunter2xyz", log_payload)
+        self.assertNotIn(SECRET_TITLE, log_payload)
 
     def test_clean_entry_writes_no_quarantine(self):
         with contextlib.redirect_stdout(io.StringIO()):
             kb_compile.sanitize_unembedded([(1, "note", "clean body", "clean title", "t", "", str(self.raw_path))])
         self.assertFalse(kb_compile.QUARANTINE_DIR.exists() and list(kb_compile.QUARANTINE_DIR.glob("*.orig")))
+        self.assertFalse(kb_compile.QUARANTINE_LOG.exists() and kb_compile.QUARANTINE_LOG.stat().st_size > 0)
+
+    def test_parity_rules_beszel_token(self):
+        parity_file = pathlib.Path(__file__).parent / "secret_patterns_parity.json"
+        self.assertTrue(parity_file.exists(), f"parity file {parity_file} missing")
+        data = json.loads(parity_file.read_text(encoding="utf-8"))
+        for tc in data["positives"]:
+            with self.subTest(pos=tc["name"]):
+                cleaned, hits = kb_compile.sanitize_secrets(tc["input"])
+                self.assertIn(tc["want_marker"], cleaned, f"failed for {tc['name']}: {cleaned}")
+                self.assertTrue(any(h[0] == "beszel_token" for h in hits), f"missing hit in {hits}")
+        for tc in data["negatives"]:
+            with self.subTest(neg=tc["name"]):
+                cleaned, hits = kb_compile.sanitize_secrets(tc["input"])
+                self.assertEqual(cleaned, tc["input"], f"unexpected modification for {tc['name']}: {cleaned}")
+                self.assertFalse(any(h[0] == "beszel_token" for h in hits), f"unexpected hit in {hits}")
 
 
 if __name__ == "__main__":

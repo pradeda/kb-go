@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -33,13 +34,10 @@ func TestLoadSecretRulesRejectsSemanticallyEmptyConfig(t *testing.T) {
 
 func mustRules(t *testing.T) *SecretRules {
 	t.Helper()
-	profile, profileErr := corpusProfile(defaultCorpus)
-	if profileErr != nil {
-		t.Fatal(profileErr)
-	}
-	r, err := loadSecretRules(profile.SecretPatternsPath)
+	path := filepath.Join("config", "secret_patterns.json")
+	r, err := loadSecretRules(path)
 	if err != nil {
-		t.Skipf("secret rules not available (%v)", err)
+		t.Fatalf("load worktree secret rules from %s: %v", path, err)
 	}
 	return r
 }
@@ -244,22 +242,61 @@ func TestSanitizeWriteCountsBodyAndTitleHits(t *testing.T) {
 	}
 }
 
-// The .orig backup must contain every original field the scanner mutated -
-// otherwise the pre-redaction title is lost forever (compile.py Gate 2 renders
-// the same shape for the fields it has: title, summary, content).
-func TestQuarantinePayloadKeepsOriginalTitle(t *testing.T) {
-	const secretTitle = "POSTGRES_PASSWORD=hunter2xyz"
-
-	if got, want := quarantinePayload(secretTitle, "clean body", "title <REDACTED_SECRET>", "clean body"),
-		"title: "+secretTitle+"\n\nclean body"; got != want {
-		t.Errorf("quarantinePayload with a mutated title = %q, want %q", got, want)
+func TestSecretPatternsParity(t *testing.T) {
+	r := mustRules(t)
+	data, err := os.ReadFile(filepath.Join("tests", "secret_patterns_parity.json"))
+	if err != nil {
+		t.Fatalf("read parity test cases: %v", err)
 	}
-	if got, want := quarantinePayload("clean title", "clean body", "clean title", "clean body"), "clean body"; got != want {
-		t.Errorf("quarantinePayload with nothing mutated = %q, want %q", got, want)
+	var cases struct {
+		Positives []struct {
+			Name       string `json:"name"`
+			Input      string `json:"input"`
+			WantMarker string `json:"want_marker"`
+			Captured   string `json:"captured"`
+		} `json:"positives"`
+		Negatives []struct {
+			Name  string `json:"name"`
+			Input string `json:"input"`
+		} `json:"negatives"`
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatalf("unmarshal parity test cases: %v", err)
+	}
+
+	for _, tc := range cases.Positives {
+		t.Run(tc.Name, func(t *testing.T) {
+			out, hits := r.Sanitize(tc.Input)
+			if !strings.Contains(out, tc.WantMarker) {
+				t.Errorf("Sanitize(%q) = %q, want marker %q", tc.Input, out, tc.WantMarker)
+			}
+			found := false
+			for _, h := range hits {
+				if h.Pattern == "beszel_token" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("Sanitize(%q) hits = %+v, want beszel_token", tc.Input, hits)
+			}
+		})
+	}
+
+	for _, tc := range cases.Negatives {
+		t.Run(tc.Name, func(t *testing.T) {
+			out, hits := r.Sanitize(tc.Input)
+			if out != tc.Input {
+				t.Errorf("negative test %q mutated: %q -> %q", tc.Name, tc.Input, out)
+			}
+			for _, h := range hits {
+				if h.Pattern == "beszel_token" {
+					t.Errorf("negative test %q unexpectedly hit beszel_token: %+v", tc.Name, h)
+				}
+			}
+		})
 	}
 }
-
-// End of Gate 1 title coverage.
 
 // captureStderr runs fn with os.Stderr redirected to a pipe and returns everything
 // written to it. recordQuarantine reports its failures on stderr, so this is how a
@@ -292,28 +329,6 @@ func captureStderr(t *testing.T, fn func()) string {
 func TestQuarantineFailuresAreReported(t *testing.T) {
 	hits := []scanHit{{Pattern: "password_assign", Action: "redact"}}
 
-	t.Run("directory cannot be created", func(t *testing.T) {
-		root := t.TempDir()
-		blocker := filepath.Join(root, "blocker")
-		if err := os.WriteFile(blocker, []byte("not a directory"), 0600); err != nil {
-			t.Fatal(err)
-		}
-		profile := CorpusProfile{
-			QuarantineDir: filepath.Join(blocker, "quarantine"),
-			QuarantineLog: filepath.Join(root, "quarantine.log"),
-		}
-		var backup string
-		stderr := captureStderr(t, func() {
-			backup = recordQuarantine(profile, "original body", "cleaned body", "cli", "note", hits)
-		})
-		if backup != "" {
-			t.Errorf("backup path = %q, want empty when the directory is unusable", backup)
-		}
-		if !strings.Contains(stderr, "quarantine") {
-			t.Errorf("stderr = %q, want a visible warning about the quarantine directory", stderr)
-		}
-	})
-
 	t.Run("audit log cannot be opened", func(t *testing.T) {
 		root := t.TempDir()
 		blocker := filepath.Join(root, "blocker")
@@ -324,25 +339,17 @@ func TestQuarantineFailuresAreReported(t *testing.T) {
 			QuarantineDir: filepath.Join(root, "quarantine"),
 			QuarantineLog: filepath.Join(blocker, "quarantine.log"),
 		}
-		var backup string
 		stderr := captureStderr(t, func() {
-			backup = recordQuarantine(profile, "original body", "cleaned body", "cli", "note", hits)
+			recordQuarantine(profile, "cli", "1", hits)
 		})
-		if backup == "" {
-			t.Fatal("backup was not written even though only the log path is unusable")
-		}
 		if !strings.Contains(stderr, "quarantine log") {
 			t.Errorf("stderr = %q, want a visible warning about the quarantine log", stderr)
 		}
 	})
 }
 
-// Two `kb add` runs in the same second with the same title must not destroy each
-// other's pre-redaction original. The backup name used to be
-// "%Y%m%d-%H%M%S-<slug>.orig" and the file was written with os.WriteFile, which
-// truncates: the second run overwrote the first .orig while both audit lines
-// pointed at the same path.
-func TestQuarantineBackupsDoNotCollideInTheSameSecond(t *testing.T) {
+// Multiple `kb add` redactions append audit lines without secret values or backup paths.
+func TestQuarantineAuditLinesRecordMetadataOnly(t *testing.T) {
 	corpusRoot := t.TempDir()
 	profile := CorpusProfile{
 		QuarantineDir: filepath.Join(corpusRoot, "quarantine"),
@@ -350,22 +357,29 @@ func TestQuarantineBackupsDoNotCollideInTheSameSecond(t *testing.T) {
 	}
 	hits := []scanHit{{Pattern: "password_assign", Action: "redact"}}
 
-	first := recordQuarantine(profile, "first original body", "first [REDACTED] body", "cli", "same-slug", hits)
-	second := recordQuarantine(profile, "second original body", "second [REDACTED] body", "cli", "same-slug", hits)
+	recordQuarantine(profile, "cli", "101", hits)
+	recordQuarantine(profile, "cli", "102", hits)
 
-	if first == "" || second == "" {
-		t.Fatalf("missing backup: first=%q second=%q", first, second)
+	// Assert no quarantine directory or .orig backup files exist
+	if entries, err := filepath.Glob(filepath.Join(profile.QuarantineDir, "*.orig")); err == nil && len(entries) > 0 {
+		t.Fatalf("found unexpected quarantine backups: %v", entries)
 	}
-	if first == second {
-		t.Fatalf("both adds wrote the same backup path %s: the first original is gone", first)
+
+	data, err := os.ReadFile(profile.QuarantineLog)
+	if err != nil {
+		t.Fatalf("read quarantine log: %v", err)
 	}
-	for path, want := range map[string]string{first: "first original body", second: "second original body"} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		if !strings.Contains(string(data), want) {
-			t.Errorf("%s = %q, want it to contain %q", path, data, want)
-		}
+	logStr := string(data)
+	if !strings.Contains(logStr, "id=101 source=cli hits=password_assign:redact") {
+		t.Errorf("log missing entry 101: %q", logStr)
+	}
+	if !strings.Contains(logStr, "id=102 source=cli hits=password_assign:redact") {
+		t.Errorf("log missing entry 102: %q", logStr)
+	}
+	if strings.Contains(logStr, "backup=") {
+		t.Errorf("log contains backup=: %q", logStr)
+	}
+	if strings.Contains(logStr, "hunter2") {
+		t.Errorf("log contains secret: %q", logStr)
 	}
 }

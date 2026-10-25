@@ -873,9 +873,8 @@ func TestAlignOwnerWithDirRootOwnedDir(t *testing.T) {
 }
 
 // TestRecordQuarantineAlignsOwnerAsRoot covers the gap that killed the backup on
-// 2026-08-11: writeRawFileExclusive aligned its owner, recordQuarantine did not,
-// so a sudo-run `kb add` whose content tripped the scanner left a root-owned
-// 0600 .orig inside a turok-owned corpus for the turok cron rsync to choke on.
+// 2026-08-11: writeRawFileExclusive aligned its owner, recordQuarantine did not.
+// The audit line path must align its owner as root so cron rsync succeeds.
 func TestRecordQuarantineAlignsOwnerAsRoot(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to reproduce the sudo case")
@@ -894,16 +893,11 @@ func TestRecordQuarantineAlignsOwnerAsRoot(t *testing.T) {
 	}
 	hits := []scanHit{{Pattern: "secret_assignment", Action: "redact"}}
 
-	backupPath := recordQuarantine(profile, "token = hunter2", "token = [REDACTED]", "cli", "note", hits)
-	if backupPath == "" {
-		t.Fatal("no quarantine backup written")
-	}
+	recordQuarantine(profile, "cli", "1", hits)
 
-	for _, path := range []string{profile.QuarantineDir, backupPath, profile.QuarantineLog} {
-		uid, gid := ownerOf(t, path)
-		if uid != wantUID || gid != wantGID {
-			t.Errorf("%s owner = %d:%d, want %d:%d", path, uid, gid, wantUID, wantGID)
-		}
+	uid, gid := ownerOf(t, profile.QuarantineLog)
+	if uid != wantUID || gid != wantGID {
+		t.Errorf("%s owner = %d:%d, want %d:%d", profile.QuarantineLog, uid, gid, wantUID, wantGID)
 	}
 }
 

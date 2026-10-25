@@ -422,8 +422,6 @@ func cmdAdd(ctx context.Context, args []string, profile CorpusProfile) {
 	}
 
 	// Gate 1: redact secrets before content reaches SQLite/FTS or the raw file.
-	origContent := content
-	origTitle := title
 	var scanHits []scanHit
 	var rerr error
 	content, title, scanHits, rerr = sanitizeWrite(profile, content, title)
@@ -444,16 +442,12 @@ func cmdAdd(ctx context.Context, args []string, profile CorpusProfile) {
 	slug := slugify(title)
 
 	if len(scanHits) > 0 {
-		backup := recordQuarantine(profile, quarantinePayload(origTitle, origContent, title, content), content, "cli", slug, scanHits)
 		names := make([]string, 0, len(scanHits))
 		for _, h := range scanHits {
 			names = append(names, h.Pattern+"("+h.Action+")")
 		}
 		fmt.Fprintf(os.Stderr, "kb add: redacted %d secret(s) before write: %s\n",
 			len(scanHits), strings.Join(names, ", "))
-		if backup != "" {
-			fmt.Fprintf(os.Stderr, "         original: %s\n", backup)
-		}
 	}
 
 	subdir := "notes"
@@ -501,6 +495,13 @@ func cmdAdd(ctx context.Context, args []string, profile CorpusProfile) {
 	id, lastIDErr := result.LastInsertId()
 	if lastIDErr != nil {
 		fmt.Fprintf(os.Stderr, "warn: could not fetch last insert id: %v\n", lastIDErr)
+	}
+	if len(scanHits) > 0 {
+		ref := ""
+		if lastIDErr == nil {
+			ref = strconv.FormatInt(id, 10)
+		}
+		recordQuarantine(profile, "cli", ref, scanHits)
 	}
 	fmt.Printf("OK [id=%d] %s\n", id, rawPath)
 }
