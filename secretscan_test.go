@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -398,44 +397,4 @@ func TestQuarantineAuditLinesRecordMetadataOnly(t *testing.T) {
 	if strings.Contains(logStr, "hunter2") {
 		t.Errorf("log contains secret: %q", logStr)
 	}
-}
-
-// TestSecretScanStepA runs the real scanner code when invoked by scanner_helper.py.
-// It accepts a JSON input file and writes ONLY JSON metadata to stdout.
-func TestSecretScanStepA(t *testing.T) {
-	rulesPath := os.Getenv("KB_SCAN_RULES_FILE")
-	inputPath := os.Getenv("KB_SCAN_INPUT_FILE")
-	if rulesPath == "" || inputPath == "" {
-		t.Skip("KB_SCAN_RULES_FILE or KB_SCAN_INPUT_FILE not set")
-	}
-	r, err := loadSecretRules(rulesPath)
-	if err != nil {
-		t.Fatalf("loadSecretRules: %v", err)
-	}
-	input, err := os.ReadFile(inputPath)
-	if err != nil {
-		t.Fatalf("read input file: %v", err)
-	}
-	var data map[string]string
-	if err := json.Unmarshal(input, &data); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	results := make(map[string]any)
-	for field, text := range data {
-		clean, hits := r.Sanitize(text)
-		hitList := make([]map[string]string, 0, len(hits))
-		for _, h := range hits {
-			hitList = append(hitList, map[string]string{
-				"rule":   h.Pattern,
-				"action": h.Action,
-			})
-		}
-		results[field] = map[string]any{
-			"hit_count": len(hits),
-			"hits":      hitList,
-			"mutated":   clean != text,
-		}
-	}
-	out, _ := json.Marshal(results)
-	fmt.Printf("KB_SCAN_RESULT:%s\n", string(out))
 }
