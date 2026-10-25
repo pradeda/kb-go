@@ -319,7 +319,7 @@ class Gate2QuarantineTests(unittest.TestCase):
         self.db_path = root / "corpus.db"
         self.raw_path = root / "raw" / "notes" / "2026-09-25-note.md"
         self.raw_path.parent.mkdir(parents=True)
-        self.raw_path.write_text("clean body", encoding="utf-8")
+        self.raw_path.write_text("prefix header\nPOSTGRES_PASSWORD=hunter2xyz\nsuffix footer", encoding="utf-8")
         db = sqlite3.connect(self.db_path)
         db.executescript(
             (MODULE_PATH.parent.parent / "config" / "schema.sql").read_text(encoding="utf-8")
@@ -363,9 +363,12 @@ class Gate2QuarantineTests(unittest.TestCase):
         self.assertIn("<REDACTED_SECRET>", title)
         self.assertEqual(content, "clean body")
 
-        # In-place raw redaction preserved
+        # In-place raw redaction preserved with surrounding text kept
         raw_text = self.raw_path.read_text(encoding="utf-8")
         self.assertNotIn("hunter2xyz", raw_text)
+        self.assertIn("<REDACTED_SECRET>", raw_text)
+        self.assertIn("prefix header\nPOSTGRES_PASSWORD=", raw_text)
+        self.assertIn("\nsuffix footer", raw_text)
 
         # No .orig backup written (no plaintext quarantine)
         backups = list(kb_compile.QUARANTINE_DIR.glob("*.orig")) if kb_compile.QUARANTINE_DIR.exists() else []
@@ -395,7 +398,10 @@ class Gate2QuarantineTests(unittest.TestCase):
             with self.subTest(pos=tc["name"]):
                 cleaned, hits = kb_compile.sanitize_secrets(tc["input"])
                 self.assertIn(tc["want_marker"], cleaned, f"failed for {tc['name']}: {cleaned}")
-                self.assertTrue(any(h[0] == "beszel_token" for h in hits), f"missing hit in {hits}")
+                beszel_hits = [h for h in hits if h[0] == "beszel_token"]
+                self.assertTrue(bool(beszel_hits), f"missing hit in {hits}")
+                if "captured" in tc:
+                    self.assertEqual(beszel_hits[0][2], tc["captured"])
         for tc in data["negatives"]:
             with self.subTest(neg=tc["name"]):
                 cleaned, hits = kb_compile.sanitize_secrets(tc["input"])

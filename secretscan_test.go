@@ -280,6 +280,21 @@ func TestSecretPatternsParity(t *testing.T) {
 			if !found {
 				t.Errorf("Sanitize(%q) hits = %+v, want beszel_token", tc.Input, hits)
 			}
+			if tc.Captured != "" {
+				var captured string
+				for _, p := range r.Patterns {
+					if p.Name == "beszel_token" {
+						sub := p.re.FindStringSubmatch(tc.Input)
+						if len(sub) > p.CaptureGroup {
+							captured = sub[p.CaptureGroup]
+						}
+						break
+					}
+				}
+				if captured != tc.Captured {
+					t.Errorf("captured = %q, want %q", captured, tc.Captured)
+				}
+			}
 		})
 	}
 

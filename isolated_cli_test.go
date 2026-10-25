@@ -75,7 +75,7 @@ func buildCLI(t *testing.T) string {
 		t.Skipf("go toolchain not available: %v", err)
 	}
 	binary := filepath.Join(t.TempDir(), "kb")
-	build := exec.Command("go", "build", "-tags", "fts5", "-o", binary, ".")
+	build := exec.Command("go", "build", "-buildvcs=false", "-tags", "fts5", "-o", binary, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Skipf("could not build the CLI here: %v\n%s", err, out)
 	}
@@ -172,6 +172,36 @@ func TestIsolatedAddQuarantinesATitleOnlySecret(t *testing.T) {
 	}
 	if strings.Contains(logStr, "backup=") {
 		t.Errorf("quarantine log contains backup=: %q", logStr)
+	}
+
+	// Verify DB title redaction:
+	dbCheck, err := openDB(CorpusProfile{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	var dbTitle, rawPath string
+	if err := dbCheck.QueryRow("SELECT title, raw_path FROM entries WHERE id = 1").Scan(&dbTitle, &rawPath); err != nil {
+		t.Fatalf("query entry: %v", err)
+	}
+	dbCheck.Close()
+	if strings.Contains(dbTitle, "hunter2xyz") || !strings.Contains(dbTitle, "<REDACTED_SECRET>") {
+		t.Errorf("db title = %q, want redacted secret", dbTitle)
+	}
+
+	// Verify raw file title redaction:
+	if rawPath == "" {
+		t.Fatalf("raw_path empty in db")
+	}
+	rawBytes, err := os.ReadFile(rawPath)
+	if err != nil {
+		t.Fatalf("read raw file %s: %v", rawPath, err)
+	}
+	rawContent := string(rawBytes)
+	if strings.Contains(rawContent, "hunter2xyz") {
+		t.Errorf("raw file leaked secret: %q", rawContent)
+	}
+	if !strings.Contains(rawContent, "<REDACTED_SECRET>") && !strings.Contains(rawContent, `\u003cREDACTED_SECRET\u003e`) {
+		t.Errorf("raw file missing <REDACTED_SECRET>: %q", rawContent)
 	}
 
 	// The production quarantine and the production env file were not touched.
