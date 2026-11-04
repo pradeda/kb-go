@@ -39,14 +39,21 @@ log() { printf '%s [kb-health] %s\n' "$(ts)" "$*"; }
 
 notify() {
     local text="$1"
+    local rc=0
     if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
         log "UPOZORENJE: Telegram nije konfigurisan ($ENV_FILE), alarm nije poslat"
         return 1
     fi
-    "$CURL" -sS -m 20 -o /dev/null \
+    if "$CURL" -sS -m 20 -o /dev/null \
         --data-urlencode "chat_id=${CHAT_ID}" \
         --data-urlencode "text=${text}" \
-        "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage"
+        "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage"; then
+        rc=0
+        logger -t tg-send "sender=kb-health event=transport_ok" 2>/dev/null || true
+    else
+        rc=$?
+    fi
+    return "$rc"
 }
 
 failures=""
