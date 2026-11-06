@@ -410,6 +410,7 @@ func TestSecretPatternsParity(t *testing.T) {
 			Input      string `json:"input"`
 			WantMarker string `json:"want_marker"`
 			WantOutput string `json:"want_output"`
+			Rescan     bool   `json:"rescan"`
 			Captured   string `json:"captured"`
 		} `json:"positives"`
 		Negatives []struct {
@@ -434,6 +435,15 @@ func TestSecretPatternsParity(t *testing.T) {
 			}
 			if tc.WantOutput != "" && out != tc.WantOutput {
 				t.Errorf("Sanitize(%q) = %q, want complete output %q", tc.Input, out, tc.WantOutput)
+			}
+			if tc.Rescan {
+				rescanned, rescanHits := r.Sanitize(tc.WantOutput)
+				if rescanned != tc.WantOutput {
+					t.Errorf("re-scan of shared output = %q, want unchanged %q", rescanned, tc.WantOutput)
+				}
+				if len(rescanHits) != 0 {
+					t.Errorf("re-scan of shared output produced hits: %+v", rescanHits)
+				}
 			}
 			found := false
 			for _, h := range hits {

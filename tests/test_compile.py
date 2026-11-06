@@ -402,6 +402,10 @@ class Gate2QuarantineTests(unittest.TestCase):
                 self.assertIn(tc["want_marker"], cleaned, f"failed for {tc['name']}: {cleaned}")
                 if "want_output" in tc:
                     self.assertEqual(cleaned, tc["want_output"], f"failed for {tc['name']}")
+                if tc.get("rescan"):
+                    rescanned, rescan_hits = kb_compile.sanitize_secrets(tc["want_output"])
+                    self.assertEqual(rescanned, tc["want_output"], f"re-scan changed shared output for {tc['name']}")
+                    self.assertEqual(rescan_hits, [], f"re-scan hit for {tc['name']}: {rescan_hits}")
                 pattern_hits = [h for h in hits if h[0] == want_pattern]
                 self.assertTrue(bool(pattern_hits), f"missing hit {want_pattern} in {hits}")
                 if "captured" in tc:
