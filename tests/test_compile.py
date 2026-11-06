@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime
 
 
@@ -407,6 +408,140 @@ class Gate2QuarantineTests(unittest.TestCase):
                 cleaned, hits = kb_compile.sanitize_secrets(tc["input"])
                 self.assertEqual(cleaned, tc["input"], f"unexpected modification for {tc['name']}: {cleaned}")
                 self.assertFalse(any(h[0] == "beszel_token" for h in hits), f"unexpected hit in {hits}")
+
+    def test_tag_only_secret_sanitized_in_db_fts_embed_and_raw(self):
+        """Secret present only in tags must be redacted in DB, FTS, embed args, and raw note."""
+        db = sqlite3.connect(self.db_path)
+        secret_tags = "homelab,POSTGRES_PASSWORD=hunter2xyz,ops"
+        try:
+            db.execute("DELETE FROM entries")
+            db.execute(
+                "INSERT INTO entries (id, type, content, title, tags, summary, raw_path)"
+                " VALUES (2, 'note', 'clean body', 'clean title', ?, '', ?)",
+                (secret_tags, str(self.raw_path)),
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        raw_fm = (
+            "---\n"
+            "type: note\n"
+            f"title: {kb_compile.encode_frontmatter_value('clean title')}\n"
+            f"tags: {kb_compile.encode_frontmatter_value(secret_tags)}\n"
+            "saved: 2026-11-06T09:00:00\n"
+            "---\n\n"
+            "clean body"
+        )
+        self.raw_path.write_text(raw_fm, encoding="utf-8")
+
+        rows = kb_compile.get_unembedded()
+        self.assertEqual(len(rows), 1)
+        with contextlib.redirect_stdout(io.StringIO()):
+            cleaned_rows = kb_compile.sanitize_unembedded(rows)
+
+        # 1. DB entries row
+        db = sqlite3.connect(self.db_path)
+        try:
+            tags, title, content = db.execute("SELECT tags, title, content FROM entries WHERE id=2").fetchone()
+            fts_count = db.execute("SELECT count(*) FROM entries_fts WHERE entries_fts MATCH 'hunter2xyz'").fetchone()[0]
+        finally:
+            db.close()
+        self.assertNotIn("hunter2xyz", tags)
+        self.assertIn("<REDACTED_SECRET>", tags)
+        self.assertEqual(title, "clean title")
+        self.assertEqual(content, "clean body")
+
+        # 2. FTS after sanitize_unembedded
+        self.assertEqual(fts_count, 0, "FTS still matched secret after tag redaction")
+
+        # 3. Arguments passed to passage_embed and upsert
+        mock_model = mock.Mock()
+        mock_embed = mock.Mock()
+        mock_embed.tolist.return_value = [0.1, 0.2]
+        mock_model.passage_embed.return_value = [mock_embed]
+        mock_coll = mock.Mock()
+
+        with mock.patch.object(kb_compile, "get_embed_model", return_value=mock_model), \
+             mock.patch.object(kb_compile, "get_chroma_collection", return_value=mock_coll), \
+             contextlib.redirect_stdout(io.StringIO()):
+            kb_compile.embed_entries(cleaned_rows)
+
+        mock_model.passage_embed.assert_called_once()
+        passed_texts = mock_model.passage_embed.call_args[0][0]
+        self.assertEqual(len(passed_texts), 1)
+        self.assertNotIn("hunter2xyz", passed_texts[0])
+        self.assertIn("<REDACTED_SECRET>", passed_texts[0])
+
+        mock_coll.upsert.assert_called_once()
+        passed_metas = mock_coll.upsert.call_args[1]["metadatas"]
+        self.assertEqual(len(passed_metas), 1)
+        self.assertNotIn("hunter2xyz", passed_metas[0]["tags"])
+        self.assertIn("<REDACTED_SECRET>", passed_metas[0]["tags"])
+
+        # 4. Raw note after _record_quarantine
+        raw_text = self.raw_path.read_text(encoding="utf-8")
+        self.assertNotIn("hunter2xyz", raw_text)
+        self.assertIn("<REDACTED_SECRET>", raw_text)
+
+    def test_record_quarantine_frontmatter_multiword_secret(self):
+        """Frontmatter title and tags with quoted multi-word secret must be sanitized in raw note."""
+        multiword_rules = {
+            "version": 1,
+            "patterns": [
+                {
+                    "name": "secret_assignment",
+                    "regex": r'(?i)(?:password|passwd|pwd|secret|client_secret|access[_-]?token|auth[_-]?token)["\']?[ \t]*[:=][ \t]*["\']?([^\s"\']+(?:[ \t]+[^\s"\']+)*)',
+                    "placeholder": "<REDACTED_SECRET>",
+                    "action": "redact",
+                    "confidence": "low",
+                    "capture_group": 1,
+                    "min_len": 6,
+                    "min_entropy": 0,
+                }
+            ],
+            "allowlist": ["changeme", "example"],
+        }
+        rules_path = pathlib.Path(self.temp.name) / "multiword-rules.json"
+        rules_path.write_text(json.dumps(multiword_rules), encoding="utf-8")
+
+        raw_fm = (
+            "---\n"
+            "type: note\n"
+            f"title: {kb_compile.encode_frontmatter_value('password: \"two words here\"')}\n"
+            f"tags: {kb_compile.encode_frontmatter_value('password: \"two words here\"')}\n"
+            "saved: 2026-11-06T09:00:00\n"
+            "---\n\n"
+            "body text"
+        )
+        self.raw_path.write_text(raw_fm, encoding="utf-8")
+
+        orig_rules = kb_compile.SECRET_PATTERNS_FILE
+        try:
+            kb_compile.SECRET_PATTERNS_FILE = rules_path
+            kb_compile._secret_rules = None
+            kb_compile._record_quarantine(
+                entry_id=3,
+                raw_path=str(self.raw_path),
+                hits=[("secret_assignment", "redact", "two words here")],
+            )
+        finally:
+            kb_compile.SECRET_PATTERNS_FILE = orig_rules
+            kb_compile._secret_rules = None
+
+        raw_text = self.raw_path.read_text(encoding="utf-8")
+        self.assertNotIn("two words here", raw_text)
+        self.assertIn("<REDACTED_SECRET>", raw_text)
+        # Verify it parses back with decode_frontmatter_value cleanly
+        parts = raw_text.split("---", 2)
+        self.assertGreaterEqual(len(parts), 3)
+        fm = {}
+        for line in parts[1].strip().split("\n"):
+            if ":" in line:
+                k, v = line.split(":", 1)
+                fm[k.strip()] = kb_compile.decode_frontmatter_value(v)
+        self.assertIn("<REDACTED_SECRET>", fm["title"])
+        self.assertIn("<REDACTED_SECRET>", fm["tags"])
 
 
 if __name__ == "__main__":

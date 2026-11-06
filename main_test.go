@@ -1033,3 +1033,82 @@ func TestRetireIsARoutedCommand(t *testing.T) {
 		t.Errorf("Args = %q, want %q", invocation.Args, want)
 	}
 }
+
+func TestCmdAddRedactsSecretOnlyInTags(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.db")
+	schema, err := os.ReadFile("config/schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(schema)); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	rulesPath, err := filepath.Abs("config/secret_patterns.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := CorpusProfile{
+		Name:               "homelab",
+		DBPath:             dbPath,
+		RawRoot:            filepath.Join(root, "raw"),
+		SecretPatternsPath: rulesPath,
+	}
+
+	secretTags := "homelab,POSTGRES_PASSWORD=hunter2xyz,ops"
+	cmdAdd(context.Background(), []string{"note", "clean content", "clean title", secretTags}, profile)
+
+	db, err = sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// 1. Check SQLite row
+	var rowTags, rowContent, rowTitle string
+	if err := db.QueryRow("SELECT tags, content, title FROM entries WHERE id=1").Scan(&rowTags, &rowContent, &rowTitle); err != nil {
+		t.Fatalf("failed to query entry: %v", err)
+	}
+	if strings.Contains(rowTags, "hunter2xyz") {
+		t.Errorf("SQLite row tags contains unredacted secret: %q", rowTags)
+	}
+	if !strings.Contains(rowTags, "<REDACTED_SECRET>") {
+		t.Errorf("SQLite row tags missing redacted marker: %q", rowTags)
+	}
+	if rowContent != "clean content" || rowTitle != "clean title" {
+		t.Errorf("content or title corrupted: content=%q title=%q", rowContent, rowTitle)
+	}
+
+	// 2. Check FTS
+	var ftsCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM entries_fts WHERE entries_fts MATCH 'hunter2xyz'").Scan(&ftsCount); err != nil {
+		t.Fatalf("FTS match query failed: %v", err)
+	}
+	if ftsCount != 0 {
+		t.Errorf("FTS matched secret text hunter2xyz: count=%d", ftsCount)
+	}
+
+	// 3. Check raw note file
+	matches, err := filepath.Glob(filepath.Join(profile.RawRoot, "notes", "*.md"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("raw note file not found: %v (matches: %v)", err, matches)
+	}
+	rawBytes, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawStr := string(rawBytes)
+	if strings.Contains(rawStr, "hunter2xyz") {
+		t.Errorf("raw note file contains unredacted secret: %s", rawStr)
+	}
+	if !strings.Contains(rawStr, "<REDACTED_SECRET>") && !strings.Contains(rawStr, `\u003cREDACTED_SECRET\u003e`) {
+		t.Errorf("raw note file missing redacted marker: %s", rawStr)
+	}
+}

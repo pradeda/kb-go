@@ -897,6 +897,36 @@ def sanitize_secrets(content):
                 content = content[:start] + p["placeholder"] + content[end:]
     return content, hits
 
+def _sanitize_raw_note(raw: str) -> str:
+    if raw.startswith("---"):
+        parts = raw.split("---", 2)
+        if len(parts) >= 3:
+            fm_lines = parts[1].split("\n")
+            new_lines = []
+            fm_changed = False
+            for line in fm_lines:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    key = k.strip()
+                    if key in ("title", "tags"):
+                        try:
+                            decoded = decode_frontmatter_value(v)
+                            cleaned, _ = sanitize_secrets(decoded)
+                            if cleaned != decoded:
+                                new_lines.append(f"{key}: {encode_frontmatter_value(cleaned)}")
+                                fm_changed = True
+                                continue
+                        except Exception:
+                            pass
+                new_lines.append(line)
+            clean_body, _ = sanitize_secrets(parts[2])
+            if fm_changed or clean_body != parts[2]:
+                return f"---{'\n'.join(new_lines)}---{clean_body}"
+            return raw
+    clean_raw, _ = sanitize_secrets(raw)
+    return clean_raw
+
+
 def _record_quarantine(entry_id, raw_path, hits):
     ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     # Redact the on-disk raw archive too, so rsync/NAS copies stay clean.
@@ -905,7 +935,7 @@ def _record_quarantine(entry_id, raw_path, hits):
             rp = Path(raw_path)
             if rp.exists():
                 raw = rp.read_text(encoding="utf-8")
-                clean_raw, _ = sanitize_secrets(raw)
+                clean_raw = _sanitize_raw_note(raw)
                 if clean_raw != raw:
                     rp.write_text(clean_raw, encoding="utf-8")
         except Exception as e:
@@ -926,10 +956,11 @@ def sanitize_unembedded(rows):
         new_content, ch = sanitize_secrets(content or "")
         new_title,   th = sanitize_secrets(title or "")
         new_summary, sh = sanitize_secrets(summary or "")
-        redact_hits = [h for h in (ch + th + sh) if h[1] == "redact"]
-        if redact_hits and (new_content != (content or "") or new_title != (title or "") or new_summary != (summary or "")):
-            db.execute("UPDATE entries SET content=?, title=?, summary=? WHERE id=?",
-                       (new_content, new_title, new_summary, entry_id))
+        new_tags,    tgh = sanitize_secrets(tags or "")
+        redact_hits = [h for h in (ch + th + sh + tgh) if h[1] == "redact"]
+        if redact_hits and (new_content != (content or "") or new_title != (title or "") or new_summary != (summary or "") or new_tags != (tags or "")):
+            db.execute("UPDATE entries SET content=?, title=?, summary=?, tags=? WHERE id=?",
+                       (new_content, new_title, new_summary, new_tags, entry_id))
             db.commit()
             _record_quarantine(
                 entry_id,
@@ -937,7 +968,7 @@ def sanitize_unembedded(rows):
                 redact_hits,
             )
             print(f"  [REDACT] #{entry_id}: {', '.join(h[0] for h in redact_hits)}")
-        cleaned.append((entry_id, etype, new_content, new_title, tags, new_summary, raw_path))
+        cleaned.append((entry_id, etype, new_content, new_title, new_tags, new_summary, raw_path))
     db.close()
     return cleaned
 

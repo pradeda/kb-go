@@ -424,7 +424,7 @@ func cmdAdd(ctx context.Context, args []string, profile CorpusProfile) {
 	// Gate 1: redact secrets before content reaches SQLite/FTS or the raw file.
 	var scanHits []scanHit
 	var rerr error
-	content, title, scanHits, rerr = sanitizeWrite(profile, content, title)
+	content, title, tags, scanHits, rerr = sanitizeWrite(profile, content, title, tags)
 	if rerr != nil {
 		fmt.Fprintf(os.Stderr, "Error: secret scanner unavailable for corpus %s: %v\n", profile.Name, rerr)
 		os.Exit(1)

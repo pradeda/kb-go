@@ -15,7 +15,7 @@ func TestSanitizeWriteFailsClosedWithoutCorpusRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile.SecretPatternsPath = filepath.Join(t.TempDir(), "missing-rules.json")
-	if _, _, _, err := sanitizeWrite(profile, "secret content", "title"); err == nil {
+	if _, _, _, _, err := sanitizeWrite(profile, "secret content", "title", "tags"); err == nil {
 		t.Fatal("sanitizeWrite unexpectedly succeeded without corpus rules")
 	}
 }
@@ -213,12 +213,15 @@ func TestSanitizeWriteCountsTitleHits(t *testing.T) {
 	}
 	const secretTitle = "POSTGRES_PASSWORD=hunter2xyz"
 
-	cleanedContent, cleanedTitle, hits, err := sanitizeWrite(profile, "clean body", secretTitle)
+	cleanedContent, cleanedTitle, cleanedTags, hits, err := sanitizeWrite(profile, "clean body", secretTitle, "clean tags")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cleanedContent != "clean body" {
 		t.Errorf("body mutated without a secret in it: %q", cleanedContent)
+	}
+	if cleanedTags != "clean tags" {
+		t.Errorf("tags mutated without a secret in it: %q", cleanedTags)
 	}
 	if strings.Contains(cleanedTitle, "hunter2xyz") || !strings.Contains(cleanedTitle, "<REDACTED_SECRET>") {
 		t.Errorf("title not redacted: %q", cleanedTitle)
@@ -233,12 +236,36 @@ func TestSanitizeWriteCountsBodyAndTitleHits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, hits, err := sanitizeWrite(profile, "token=0123456789abcdef0123456789abcdef", "POSTGRES_PASSWORD=hunter2xyz")
+	_, _, _, hits, err := sanitizeWrite(profile, "token=0123456789abcdef0123456789abcdef", "POSTGRES_PASSWORD=hunter2xyz", "clean tags")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(hits) < 2 {
 		t.Fatalf("hits = %+v, want a hit for the body and the title", hits)
+	}
+}
+
+func TestSanitizeWriteRedactsTags(t *testing.T) {
+	profile, err := corpusProfile(defaultCorpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const secretTags = "homelab,POSTGRES_PASSWORD=hunter2xyz,ops"
+	cleanedContent, cleanedTitle, cleanedTags, hits, err := sanitizeWrite(profile, "clean body", "clean title", secretTags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanedContent != "clean body" {
+		t.Errorf("body mutated without a secret in it: %q", cleanedContent)
+	}
+	if cleanedTitle != "clean title" {
+		t.Errorf("title mutated without a secret in it: %q", cleanedTitle)
+	}
+	if strings.Contains(cleanedTags, "hunter2xyz") || !strings.Contains(cleanedTags, "<REDACTED_SECRET>") {
+		t.Errorf("tags not redacted: %q", cleanedTags)
+	}
+	if len(hits) == 0 {
+		t.Fatal("tag-only secret produced no hit: kb add would stay silent")
 	}
 }
 

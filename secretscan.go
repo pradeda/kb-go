@@ -40,10 +40,10 @@ type scanHit struct {
 	Action  string
 }
 
-func sanitizeWrite(profile CorpusProfile, content, title string) (string, string, []scanHit, error) {
+func sanitizeWrite(profile CorpusProfile, content, title, tags string) (string, string, string, []scanHit, error) {
 	rules, err := loadSecretRules(profile.SecretPatternsPath)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", "", nil, err
 	}
 	cleanedContent, hits := rules.Sanitize(content)
 	cleanedTitle := title
@@ -54,7 +54,13 @@ func sanitizeWrite(profile CorpusProfile, content, title string) (string, string
 		// and the .orig backup, exactly as a secret in the body does.
 		hits = append(hits, titleHits...)
 	}
-	return cleanedContent, cleanedTitle, hits, nil
+	cleanedTags := tags
+	if tags != "" {
+		var tagHits []scanHit
+		cleanedTags, tagHits = rules.Sanitize(tags)
+		hits = append(hits, tagHits...)
+	}
+	return cleanedContent, cleanedTitle, cleanedTags, hits, nil
 }
 
 
