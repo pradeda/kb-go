@@ -400,6 +400,8 @@ class Gate2QuarantineTests(unittest.TestCase):
             with self.subTest(pos=tc["name"]):
                 cleaned, hits = kb_compile.sanitize_secrets(tc["input"])
                 self.assertIn(tc["want_marker"], cleaned, f"failed for {tc['name']}: {cleaned}")
+                if "want_output" in tc:
+                    self.assertEqual(cleaned, tc["want_output"], f"failed for {tc['name']}")
                 pattern_hits = [h for h in hits if h[0] == want_pattern]
                 self.assertTrue(bool(pattern_hits), f"missing hit {want_pattern} in {hits}")
                 if "captured" in tc:
@@ -594,7 +596,7 @@ class Gate2QuarantineTests(unittest.TestCase):
             ("password: abc def", "password: <REDACTED_SECRET>"),
             ('password: "two words here"', 'password: "<REDACTED_SECRET>"'),
             ("password: rotated monthly", "password: <REDACTED_SECRET>"),
-            ("PASSWORD=abc123 OTHER_SETTING=value", "PASSWORD=<REDACTED_SECRET>"),
+            ("PASSWORD=abc123 OTHER_SETTING=value", "PASSWORD=<REDACTED_SECRET> OTHER_SETTING=value"),
             ("FOO_PASSWORD=hunter2xyz", "FOO_PASSWORD=<REDACTED_SECRET>"),
             ("password:\nnext line", "password:\nnext line"),
             ("password:\r\nnext line", "password:\r\nnext line"),
@@ -604,6 +606,34 @@ class Gate2QuarantineTests(unittest.TestCase):
             with self.subTest(inp=inp):
                 out, _ = kb_compile.sanitize_secrets(inp)
                 self.assertEqual(out, want, f"sanitize_secrets({inp!r}) got {out!r}, want {want!r}")
+
+    def test_secret_assignment_rescan_stability_in_raw_frontmatter(self):
+        inputs = [
+            "alpha bravo charlie delta echo foxtrot golf hotel india",
+            " ".join(f"word{i:03d}" for i in range(1, 201)),
+        ]
+        for value in inputs:
+            with self.subTest(sanitizer_words=len(value.split())):
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    first, _ = kb_compile.sanitize_secrets("password: " + value)
+                    second, second_hits = kb_compile.sanitize_secrets(first)
+                    third, third_hits = kb_compile.sanitize_secrets(second)
+                self.assertEqual(second, first)
+                self.assertEqual(third, first)
+                self.assertEqual(second_hits, [])
+                self.assertEqual(third_hits, [])
+                self.assertEqual(err.getvalue(), "")
+        for ending in ("\n", "\r\n"):
+            for value in inputs:
+                raw = ending.join(("---", f"title: password: {value}", "type: note", "---", "body"))
+                with self.subTest(ending=repr(ending), words=len(value.split())):
+                    with contextlib.redirect_stderr(io.StringIO()) as err:
+                        first = kb_compile._sanitize_raw_note(raw, entry_path="fixture.md")
+                        second = kb_compile._sanitize_raw_note(first, entry_path="fixture.md")
+                        third = kb_compile._sanitize_raw_note(second, entry_path="fixture.md")
+                    self.assertEqual(second, first)
+                    self.assertEqual(third, first)
+                    self.assertEqual(err.getvalue(), "")
 
     def test_non_ascii_length_measure_parity(self):
         # 3 Cyrillic characters (6 bytes UTF-8) -> len() is 3 < min_len 6 -> must stay unredacted

@@ -173,6 +173,12 @@ func (r *SecretRules) allowed(value string) bool {
 	return ok
 }
 
+func isOwnMarkerContinuation(value, placeholder string) bool {
+	v := asciiToLower(asciiTrimSpace(value))
+	marker := asciiToLower(placeholder)
+	return v == marker || strings.HasPrefix(v, marker+" ") || strings.HasPrefix(v, marker+"\t")
+}
+
 // shannonEntropy returns bits-per-character Shannon entropy over the bytes of s.
 // ASCII-only secrets make this identical to the Python side.
 func shannonEntropy(s string) float64 {
@@ -216,6 +222,9 @@ func (r *SecretRules) Sanitize(content string) (string, []scanHit) {
 			}
 			start, end := m[gi], m[gi+1]
 			value := content[start:end]
+			if p.Action == "redact" && isOwnMarkerContinuation(value, p.Placeholder) {
+				continue
+			}
 
 			if r.allowed(value) {
 				if p.Action == "redact" && !strings.HasPrefix(asciiToLower(value), "<redacted_") {

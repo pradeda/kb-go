@@ -146,6 +146,33 @@ func TestSanitize_Idempotent(t *testing.T) {
 	}
 }
 
+func TestSecretAssignmentRescanStability(t *testing.T) {
+	r := mustRules(t)
+	oldOutput := log.Writer()
+	var logOutput bytes.Buffer
+	log.SetOutput(&logOutput)
+	defer log.SetOutput(oldOutput)
+	inputs := []string{
+		"password: alpha bravo charlie delta echo foxtrot golf hotel india",
+		"password: " + strings.Repeat("wordxxx ", 199) + "wordxxx",
+		"password: <redacted_secret>\t hand typed words",
+	}
+	for _, input := range inputs {
+		first, _ := r.Sanitize(input)
+		second, secondHits := r.Sanitize(first)
+		third, thirdHits := r.Sanitize(second)
+		if second != first || third != first {
+			t.Errorf("re-scan changed output: first=%q second=%q third=%q", first, second, third)
+		}
+		if len(secondHits) != 0 || len(thirdHits) != 0 {
+			t.Errorf("stable re-scan produced hits: second=%+v third=%+v", secondHits, thirdHits)
+		}
+	}
+	if logOutput.Len() != 0 {
+		t.Errorf("stable re-scan produced allow-skip log lines: %q", logOutput.String())
+	}
+}
+
 func TestSanitize_MultiHit(t *testing.T) {
 	r := mustRules(t)
 	in := "or sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef and tg 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345678"
@@ -337,7 +364,7 @@ func TestSecretAssignmentMultiWordCases(t *testing.T) {
 		{"password: abc def", "password: <REDACTED_SECRET>", "two short words exceeding 6 chars"},
 		{`password: "two words here"`, `password: "<REDACTED_SECRET>"`, "quoted two words"},
 		{"password: rotated monthly", "password: <REDACTED_SECRET>", "accepted cost: looks like secret"},
-		{"PASSWORD=abc123 OTHER_SETTING=value", "PASSWORD=<REDACTED_SECRET>", "accepted cost: sibling setting included"},
+		{"PASSWORD=abc123 OTHER_SETTING=value", "PASSWORD=<REDACTED_SECRET> OTHER_SETTING=value", "sibling assignment keeps its own value"},
 		{"FOO_PASSWORD=hunter2xyz", "FOO_PASSWORD=<REDACTED_SECRET>", "prefix keyword without word boundary"},
 		{"password:\nnext line", "password:\nnext line", "must not capture next line across newline"},
 		{"password:\r\nnext line", "password:\r\nnext line", "must not capture next line across CRLF"},
@@ -382,6 +409,7 @@ func TestSecretPatternsParity(t *testing.T) {
 			Pattern    string `json:"pattern"`
 			Input      string `json:"input"`
 			WantMarker string `json:"want_marker"`
+			WantOutput string `json:"want_output"`
 			Captured   string `json:"captured"`
 		} `json:"positives"`
 		Negatives []struct {
@@ -403,6 +431,9 @@ func TestSecretPatternsParity(t *testing.T) {
 			out, hits := r.Sanitize(tc.Input)
 			if !strings.Contains(out, tc.WantMarker) {
 				t.Errorf("Sanitize(%q) = %q, want marker %q", tc.Input, out, tc.WantMarker)
+			}
+			if tc.WantOutput != "" && out != tc.WantOutput {
+				t.Errorf("Sanitize(%q) = %q, want complete output %q", tc.Input, out, tc.WantOutput)
 			}
 			found := false
 			for _, h := range hits {
