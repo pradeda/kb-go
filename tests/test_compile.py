@@ -717,6 +717,75 @@ class Gate2QuarantineTests(unittest.TestCase):
             kb_compile.SECRET_PATTERNS_FILE = orig_rules
             kb_compile._secret_rules = None
 
+    def test_sanitize_raw_note_unicode_line_separators(self):
+        """U+2028 and U+2029 inside a JSON title must not split physical frontmatter lines."""
+        orig_rules = kb_compile.SECRET_PATTERNS_FILE
+        shipped_rules = pathlib.Path(__file__).resolve().parent.parent / "config" / "secret_patterns.json"
+        try:
+            kb_compile.SECRET_PATTERNS_FILE = shipped_rules
+            kb_compile._secret_rules = None
+
+            # 1. U+2028 and U+2029 inside a JSON title before a quoted multi-word secret value
+            raw1 = (
+                "---\n"
+                'title: "title with \u2028 and \u2029 password: \\"secret value here\\""\n'
+                'tags: "ops"\n'
+                "---\n"
+                "body text\n"
+            )
+            with io.StringIO() as warn_buf, contextlib.redirect_stdout(warn_buf):
+                clean1 = kb_compile._sanitize_raw_note(raw1, entry_path="note1.md")
+                warn_output1 = warn_buf.getvalue()
+            self.assertEqual(warn_output1, "", f"Unexpected warning: {warn_output1}")
+            self.assertNotIn("secret value here", clean1)
+            self.assertIn("<REDACTED_SECRET>", clean1)
+            lines1 = clean1.split("\n")
+            title_line1 = next(line for line in lines1 if line.startswith("title:"))
+            title_val1 = title_line1.split(":", 1)[1].strip()
+            decoded1 = json.loads(title_val1)
+            self.assertEqual(
+                decoded1,
+                'title with \u2028 and \u2029 password: "<REDACTED_SECRET>"',
+            )
+
+            # 2. Continuation after U+2028 that looks like `tags: ...`
+            raw2 = (
+                "---\n"
+                'title: "title prefix \u2028tags: fake_tag password: \\"secret value here\\""\n'
+                "---\n"
+                "body text\n"
+            )
+            with io.StringIO() as warn_buf, contextlib.redirect_stdout(warn_buf):
+                clean2 = kb_compile._sanitize_raw_note(raw2, entry_path="note2.md")
+                warn_output2 = warn_buf.getvalue()
+            self.assertEqual(warn_output2, "", f"Unexpected warning: {warn_output2}")
+            self.assertNotIn("secret value here", clean2)
+            self.assertIn("<REDACTED_SECRET>", clean2)
+            lines2 = clean2.split("\n")
+            title_line2 = next(line for line in lines2 if line.startswith("title:"))
+            title_val2 = title_line2.split(":", 1)[1].strip()
+            decoded2 = json.loads(title_val2)
+            self.assertEqual(
+                decoded2,
+                'title prefix \u2028tags: fake_tag password: "<REDACTED_SECRET>"',
+            )
+
+            # 3. Clean note containing these characters stays byte-identical (including CRLF)
+            raw3 = (
+                "---\r\n"
+                'title: "Clean \u2028 and \u2029 Note"\r\n'
+                'tags: "clean, ops"\r\n'
+                "---\r\n"
+                "Body \u2028 line 1\r\n"
+                "Body line 2\r\n"
+            )
+            clean3 = kb_compile._sanitize_raw_note(raw3, entry_path="clean.md")
+            self.assertEqual(clean3, raw3)
+            self.assertEqual(clean3.encode("utf-8"), raw3.encode("utf-8"))
+        finally:
+            kb_compile.SECRET_PATTERNS_FILE = orig_rules
+            kb_compile._secret_rules = None
+
 
 if __name__ == "__main__":
     unittest.main()

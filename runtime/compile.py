@@ -929,7 +929,16 @@ def sanitize_secrets(content):
     return content, hits
 
 def _sanitize_raw_note(raw: str, entry_path: str = "") -> str:
-    lines = raw.splitlines(keepends=True)
+    if not raw:
+        clean_raw, _ = sanitize_secrets(raw)
+        return clean_raw
+
+    # Split into physical lines on LF only, keeping line endings (avoids splitting on U+2028/U+2029)
+    parts = raw.split("\n")
+    lines = [p + "\n" for p in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+
     if not lines or lines[0] not in ("---\n", "---\r\n"):
         clean_raw, _ = sanitize_secrets(raw)
         return clean_raw
