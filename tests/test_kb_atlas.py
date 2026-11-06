@@ -1,4 +1,6 @@
 import ast
+import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -119,6 +121,68 @@ class KbAtlasContractTests(unittest.TestCase):
                     result.returncode, 0,
                     f"JS block {i} fails node --check:\n{result.stderr}",
                 )
+
+    def test_render_escapes_script_closing_tags(self):
+        """Payload containing </script> and </ScRiPt> must not break out of the JSON island."""
+        model = {
+            "title": "Danger </script><script>alert(1)</script>",
+            "tags": ["alpha", "beta</ScRiPt><script id='xss'>xss()</script>"],
+            "summary": "Summary with </script> embedded",
+            "content": "Content with </ScRiPt> and more text",
+        }
+        cmd = [
+            "/opt/kb/venv-embed/bin/python",
+            "-c",
+            (
+                "import json, sys\n"
+                "import kb_atlas\n"
+                "model = json.loads(sys.argv[1])\n"
+                "template = sys.argv[2]\n"
+                "sys.stdout.write(kb_atlas.render(model, template))\n"
+            ),
+            json.dumps(model),
+            str(TEMPLATE),
+        ]
+        res = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            env=dict(os.environ, PYTHONPATH=str(REPO / "runtime")),
+        )
+        rendered_html = res.stdout
+
+        class IslandParser(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=False)
+                self.script_count = 0
+                self.in_atlas_data = False
+                self.atlas_data = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag.lower() == "script":
+                    self.script_count += 1
+                    attrs_dict = dict(attrs)
+                    if attrs_dict.get("id") == "atlas-data":
+                        self.in_atlas_data = True
+
+            def handle_endtag(self, tag):
+                if tag.lower() == "script":
+                    if self.in_atlas_data:
+                        self.in_atlas_data = False
+
+            def handle_data(self, data):
+                if self.in_atlas_data:
+                    self.atlas_data.append(data)
+
+        parser = IslandParser()
+        parser.feed(rendered_html)
+
+        # Baseline template has exactly 2 script elements: #atlas-data and the main script.
+        self.assertEqual(parser.script_count, 2, f"Expected 2 script elements, found {parser.script_count}")
+        island_json = "".join(parser.atlas_data)
+        decoded = json.loads(island_json)
+        self.assertEqual(decoded, model)
 
 
 if __name__ == "__main__":
