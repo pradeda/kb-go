@@ -902,6 +902,7 @@ def _allowed(rules, value):
 def sanitize_secrets(content):
     rules = load_secret_rules()
     hits = []
+    logged_patterns = set()
     for p in rules["patterns"]:
         for m in reversed(list(p["_re"].finditer(content))):
             try:
@@ -912,8 +913,10 @@ def sanitize_secrets(content):
                 continue
             value = content[start:end]
             if _allowed(rules, value):
-                if p.get("action") == "redact":
-                    sys.stderr.write(f"secret scanner: allow-set skipped pattern {p.get('name')}\n")
+                if p.get("action") == "redact" and not value.lower().startswith("<redacted_"):
+                    if p.get("name") not in logged_patterns:
+                        sys.stderr.write(f"secret scanner: allow-set skipped pattern {p.get('name')}\n")
+                        logged_patterns.add(p.get("name"))
                 continue
             if len(value) < p.get("min_len", 0):
                 continue

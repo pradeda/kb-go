@@ -692,6 +692,31 @@ class Gate2QuarantineTests(unittest.TestCase):
             kb_compile.SECRET_PATTERNS_FILE = orig_rules
             kb_compile._secret_rules = None
 
+    def test_allow_skip_logging_deduplicates_and_ignores_markers(self):
+        """F4: Allow-skip logging suppresses redaction markers and logs at most once per pattern."""
+        orig_rules = kb_compile.SECRET_PATTERNS_FILE
+        shipped_rules = pathlib.Path(__file__).resolve().parent.parent / "config" / "secret_patterns.json"
+        try:
+            kb_compile.SECRET_PATTERNS_FILE = shipped_rules
+            kb_compile._secret_rules = None
+
+            # 1. Markers produce NO stderr logs
+            with io.StringIO() as err_buf, contextlib.redirect_stderr(err_buf):
+                kb_compile.sanitize_secrets("password: <REDACTED_SECRET> and token: <redacted_api_key>")
+                err_output = err_buf.getvalue()
+            self.assertEqual(err_output, "", f"Expected no stderr for markers, got: {err_output!r}")
+
+            # 2. Multiple allowed values log at most once per pattern
+            with io.StringIO() as err_buf, contextlib.redirect_stderr(err_buf):
+                kb_compile.sanitize_secrets("password: example\npassword: example\n")
+                err_output = err_buf.getvalue()
+            count = err_output.count("allow-set skipped pattern secret_assignment")
+            self.assertEqual(count, 1, f"Expected exactly 1 log line, got {count}: {err_output!r}")
+            self.assertNotIn("example", err_output)
+        finally:
+            kb_compile.SECRET_PATTERNS_FILE = orig_rules
+            kb_compile._secret_rules = None
+
 
 if __name__ == "__main__":
     unittest.main()

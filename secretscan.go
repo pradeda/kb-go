@@ -201,6 +201,7 @@ func shannonEntropy(s string) float64 {
 // it via the allowlist.
 func (r *SecretRules) Sanitize(content string) (string, []scanHit) {
 	var hits []scanHit
+	loggedPatterns := make(map[string]bool)
 	for _, p := range r.Patterns {
 		matches := p.re.FindAllStringSubmatchIndex(content, -1)
 		if matches == nil {
@@ -217,8 +218,11 @@ func (r *SecretRules) Sanitize(content string) (string, []scanHit) {
 			value := content[start:end]
 
 			if r.allowed(value) {
-				if p.Action == "redact" {
-					log.Printf("secret scanner: allow-set skipped pattern %s", p.Name)
+				if p.Action == "redact" && !strings.HasPrefix(asciiToLower(value), "<redacted_") {
+					if !loggedPatterns[p.Name] {
+						log.Printf("secret scanner: allow-set skipped pattern %s", p.Name)
+						loggedPatterns[p.Name] = true
+					}
 				}
 				continue
 			}

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -532,5 +534,32 @@ func TestQuarantineAuditLinesRecordMetadataOnly(t *testing.T) {
 	}
 	if strings.Contains(logStr, "hunter2") {
 		t.Errorf("log contains secret: %q", logStr)
+	}
+}
+
+func TestAllowSkipLogging(t *testing.T) {
+	r := mustRules(t)
+
+	// 1. Re-scanning a marker must produce NO allow-skip log lines
+	var buf bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(origWriter)
+
+	r.Sanitize("password: <REDACTED_SECRET> and token: <redacted_api_key>")
+	if buf.Len() > 0 {
+		t.Errorf("expected no log lines for redaction markers, got: %q", buf.String())
+	}
+
+	// 2. Multiple allowed values for the same pattern log at most once per Sanitize call
+	buf.Reset()
+	r.Sanitize("password: example\npassword: example\n")
+	logOut := buf.String()
+	count := strings.Count(logOut, "allow-set skipped pattern secret_assignment")
+	if count != 1 {
+		t.Errorf("expected exactly 1 skip log for secret_assignment, got %d (%q)", count, logOut)
+	}
+	if strings.Contains(logOut, "example") {
+		t.Errorf("log output must never contain matched value: %q", logOut)
 	}
 }

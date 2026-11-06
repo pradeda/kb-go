@@ -1108,7 +1108,7 @@ func TestCmdAddRedactsSecretOnlyInTags(t *testing.T) {
 	if strings.Contains(rawStr, "hunter2xyz") {
 		t.Errorf("raw note file contains unredacted secret: %s", rawStr)
 	}
-	if !strings.Contains(rawStr, "<REDACTED_SECRET>") && !strings.Contains(rawStr, `\u003cREDACTED_SECRET\u003e`) {
+	if !strings.Contains(rawStr, `\u003cREDACTED_SECRET\u003e`) {
 		t.Errorf("raw note file missing redacted marker: %s", rawStr)
 	}
 }
