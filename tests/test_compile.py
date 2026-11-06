@@ -618,6 +618,80 @@ class Gate2QuarantineTests(unittest.TestCase):
         self.assertEqual(out, "password: <REDACTED_SECRET>")
         self.assertGreater(len(hits), 0)
 
+    def test_sanitize_raw_note_f1_cases(self):
+        """F1: _sanitize_raw_note delimits on full lines only, handles escaped quotes and malformed values."""
+        orig_rules = kb_compile.SECRET_PATTERNS_FILE
+        shipped_rules = pathlib.Path(__file__).resolve().parent.parent / "config" / "secret_patterns.json"
+        try:
+            kb_compile.SECRET_PATTERNS_FILE = shipped_rules
+            kb_compile._secret_rules = None
+
+            # 1. '---' inside a title with a quoted multi-word value before and after it
+            raw1 = (
+                "---\n"
+                'title: "password: \\"two words\\" --- secret: \\"other words\\""\n'
+                'tags: "ops"\n'
+                "---\n"
+                "body text\n"
+            )
+            clean1 = kb_compile._sanitize_raw_note(raw1, entry_path="note1.md")
+            self.assertNotIn("two words", clean1)
+            self.assertNotIn("other words", clean1)
+            self.assertIn("<REDACTED_SECRET>", clean1)
+            # Assert title still decodes as valid JSON
+            lines1 = clean1.splitlines()
+            title_line1 = next(line for line in lines1 if line.startswith("title:"))
+            title_val1 = title_line1.split(":", 1)[1].strip()
+            decoded1 = json.loads(title_val1)
+            self.assertEqual(
+                decoded1,
+                'password: "<REDACTED_SECRET>" --- secret: "<REDACTED_SECRET>"',
+            )
+
+            # 2. An escaped quote after the '---'
+            raw2 = (
+                "---\n"
+                'title: "something --- with \\" escaped quote password: \\"hunter2 extra words\\""\n'
+                "---\n"
+                "body text\n"
+            )
+            clean2 = kb_compile._sanitize_raw_note(raw2, entry_path="note2.md")
+            self.assertNotIn("hunter2 extra words", clean2)
+            lines2 = clean2.splitlines()
+            title_line2 = next(line for line in lines2 if line.startswith("title:"))
+            title_val2 = title_line2.split(":", 1)[1].strip()
+            decoded2 = json.loads(title_val2)
+            self.assertEqual(
+                decoded2,
+                'something --- with " escaped quote password: "<REDACTED_SECRET>"',
+            )
+
+            # 3. A malformed quoted title containing a secret
+            raw3 = (
+                "---\n"
+                'title: "malformed quote password: hunter2 extra words without closing quote\n'
+                'tags: "ops"\n'
+                "---\n"
+                "body text\n"
+            )
+            with io.StringIO() as warn_buf, contextlib.redirect_stdout(warn_buf):
+                clean3 = kb_compile._sanitize_raw_note(raw3, entry_path="malformed_note.md")
+                warn_output = warn_buf.getvalue()
+            self.assertNotIn("hunter2 extra words", clean3)
+            self.assertIn("<REDACTED_SECRET>", clean3)
+            self.assertIn("[WARN]", warn_output)
+            self.assertIn("malformed_note.md", warn_output)
+            self.assertNotIn("hunter2", warn_output)
+
+            # 4. An unchanged note stays byte-identical (including CRLF)
+            raw4 = "---\r\ntitle: \"Clean Note\"\r\ntags: \"clean, ops\"\r\n---\r\nBody line 1\r\nBody line 2\r\n"
+            clean4 = kb_compile._sanitize_raw_note(raw4, entry_path="clean.md")
+            self.assertEqual(clean4, raw4)
+            self.assertEqual(clean4.encode("utf-8"), raw4.encode("utf-8"))
+        finally:
+            kb_compile.SECRET_PATTERNS_FILE = orig_rules
+            kb_compile._secret_rules = None
+
 
 if __name__ == "__main__":
     unittest.main()

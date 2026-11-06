@@ -925,34 +925,54 @@ def sanitize_secrets(content):
                 content = content[:start] + p["placeholder"] + content[end:]
     return content, hits
 
-def _sanitize_raw_note(raw: str) -> str:
-    if raw.startswith("---"):
-        parts = raw.split("---", 2)
-        if len(parts) >= 3:
-            fm_lines = parts[1].split("\n")
-            new_lines = []
-            fm_changed = False
-            for line in fm_lines:
-                if ":" in line:
-                    k, v = line.split(":", 1)
-                    key = k.strip()
-                    if key in ("title", "tags"):
-                        try:
-                            decoded = decode_frontmatter_value(v)
-                            cleaned, _ = sanitize_secrets(decoded)
-                            if cleaned != decoded:
-                                new_lines.append(f"{key}: {encode_frontmatter_value(cleaned)}")
-                                fm_changed = True
-                                continue
-                        except Exception:
-                            pass
-                new_lines.append(line)
-            clean_body, _ = sanitize_secrets(parts[2])
-            if fm_changed or clean_body != parts[2]:
-                return f"---{'\n'.join(new_lines)}---{clean_body}"
-            return raw
-    clean_raw, _ = sanitize_secrets(raw)
-    return clean_raw
+def _sanitize_raw_note(raw: str, entry_path: str = "") -> str:
+    lines = raw.splitlines(keepends=True)
+    if not lines or lines[0] not in ("---\n", "---\r\n"):
+        clean_raw, _ = sanitize_secrets(raw)
+        return clean_raw
+
+    closing_idx = -1
+    for i in range(1, len(lines)):
+        if lines[i] in ("---\n", "---\r\n", "---"):
+            closing_idx = i
+            break
+
+    if closing_idx == -1:
+        clean_raw, _ = sanitize_secrets(raw)
+        return clean_raw
+
+    fm_lines = lines[1:closing_idx]
+    new_fm_lines = []
+    fm_changed = False
+
+    for line in fm_lines:
+        line_ending = "\r\n" if line.endswith("\r\n") else ("\n" if line.endswith("\n") else "")
+        line_content = line[:-len(line_ending)] if line_ending else line
+        if ":" in line_content:
+            k, v = line_content.split(":", 1)
+            key = k.strip()
+            if key in ("title", "tags"):
+                try:
+                    decoded = decode_frontmatter_value(v)
+                    cleaned, _ = sanitize_secrets(decoded)
+                    if cleaned != decoded:
+                        new_fm_lines.append(f"{k}: {encode_frontmatter_value(cleaned)}{line_ending}")
+                        fm_changed = True
+                        continue
+                except Exception:
+                    print(f"  [WARN] frontmatter decode failed for {entry_path}: fallback plain-text sanitize")
+                    cleaned_line, _ = sanitize_secrets(line)
+                    if cleaned_line != line:
+                        new_fm_lines.append(cleaned_line)
+                        fm_changed = True
+                        continue
+        new_fm_lines.append(line)
+
+    body = "".join(lines[closing_idx + 1:])
+    clean_body, _ = sanitize_secrets(body)
+    if fm_changed or clean_body != body:
+        return "".join([lines[0]] + new_fm_lines + [lines[closing_idx]] + [clean_body])
+    return raw
 
 
 def _record_quarantine(entry_id, raw_path, hits):
@@ -963,7 +983,7 @@ def _record_quarantine(entry_id, raw_path, hits):
             rp = Path(raw_path)
             if rp.exists():
                 raw = rp.read_text(encoding="utf-8")
-                clean_raw = _sanitize_raw_note(raw)
+                clean_raw = _sanitize_raw_note(raw, entry_path=str(raw_path or ""))
                 if clean_raw != raw:
                     rp.write_text(clean_raw, encoding="utf-8")
         except Exception as e:
