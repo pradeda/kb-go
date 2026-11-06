@@ -32,6 +32,7 @@ DEPLOY_MANIFEST = \
 	runtime/corpora.py:/opt/kb/corpora.py:644:root \
 	runtime/supersede_index.py:/opt/kb/supersede_index.py:644:root \
 	config/secret_patterns.json:/opt/kb/secret_patterns.json:644:root \
+	config/secret_patterns.json:/opt/ai-kb/secret_patterns.json:644:root \
 	runtime/embed_daemon.py:/opt/kb/embed_daemon.py:644:root \
 	runtime/refresh_volatile.sh:/opt/kb/refresh_volatile.sh:755:root \
 	runtime/watcher.sh:/opt/kb/watcher.sh:755:root \
