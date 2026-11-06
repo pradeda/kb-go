@@ -72,11 +72,14 @@ printf "elapsed=%s slept=%s\\n" "$elapsed" "$slept"
         self.assertNotIn("value too great for base", res.stderr)
         self.assertIn("slept=\n", res.stdout)
 
-    def test_overflow_prevention_on_20_digit_timestamp(self):
-        """20-digit number must be rejected (max 19 digits), preventing 64-bit int overflow."""
-        res, _ = self.run_debounce("99999999999999999999")
-        self.assertEqual(res.returncode, 0, f"Overflow caused bash error: {res.stderr}")
-        self.assertIn("slept=\n", res.stdout)
+    def test_overflow_prevention_on_large_timestamps(self):
+        """19-digit overflow values (e.g. 2^63 and 19 nines) and 20-digit values must be rejected."""
+        cases = ["9223372036854775808", "9999999999999999999", "99999999999999999999"]
+        for val in cases:
+            with self.subTest(val=val):
+                res, _ = self.run_debounce(val)
+                self.assertEqual(res.returncode, 0, f"Overflow value {val} caused error: {res.stderr}")
+                self.assertIn("slept=\n", res.stdout, f"Overflow value {val} triggered sleep instead of last=0")
 
     def test_future_timestamp_treated_as_zero(self):
         """A future timestamp must be treated as 0 so it cannot suppress compiles indefinitely."""
