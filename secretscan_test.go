@@ -324,6 +324,50 @@ func TestRescanRedactedOutputUnchangedForEveryMarker(t *testing.T) {
 	}
 }
 
+func TestSecretAssignmentMultiWordCases(t *testing.T) {
+	r := mustRules(t)
+	cases := []struct {
+		input       string
+		want        string
+		description string
+	}{
+		{"password: hunter2 extra words", "password: <REDACTED_SECRET>", "multi-word assignment"},
+		{"password: abc def", "password: <REDACTED_SECRET>", "two short words exceeding 6 chars"},
+		{`password: "two words here"`, `password: "<REDACTED_SECRET>"`, "quoted two words"},
+		{"password: rotated monthly", "password: <REDACTED_SECRET>", "accepted cost: looks like secret"},
+		{"PASSWORD=abc123 OTHER_SETTING=value", "PASSWORD=<REDACTED_SECRET>", "accepted cost: sibling setting included"},
+		{"FOO_PASSWORD=hunter2xyz", "FOO_PASSWORD=<REDACTED_SECRET>", "prefix keyword without word boundary"},
+		{"password:\nnext line", "password:\nnext line", "must not capture next line across newline"},
+		{"password:\r\nnext line", "password:\r\nnext line", "must not capture next line across CRLF"},
+		{"password: abc", "password: abc", "under 6 chars stays unredacted"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.description, func(t *testing.T) {
+			out, _ := r.Sanitize(tc.input)
+			if out != tc.want {
+				t.Errorf("Sanitize(%q) = %q, want %q", tc.input, out, tc.want)
+			}
+		})
+	}
+}
+
+func TestNonASCIILengthMeasureParity(t *testing.T) {
+	r := mustRules(t)
+	// 3 Cyrillic characters (6 bytes UTF-8) -> rune count 3 < min_len 6 -> must stay unredacted
+	underSix := "password: пар"
+	out, hits := r.Sanitize(underSix)
+	if out != underSix || len(hits) != 0 {
+		t.Errorf("3 non-ASCII characters (6 bytes) should be under min_len 6: out=%q hits=%+v", out, hits)
+	}
+
+	// 6 Cyrillic characters (12 bytes UTF-8) -> rune count 6 == min_len 6 -> must be redacted
+	sixChars := "password: пароль"
+	out, hits = r.Sanitize(sixChars)
+	if out != "password: <REDACTED_SECRET>" || len(hits) == 0 {
+		t.Errorf("6 non-ASCII characters should match min_len 6: out=%q hits=%+v", out, hits)
+	}
+}
+
 func TestSecretPatternsParity(t *testing.T) {
 	r := mustRules(t)
 	data, err := os.ReadFile(filepath.Join("tests", "secret_patterns_parity.json"))

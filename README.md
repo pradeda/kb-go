@@ -216,7 +216,7 @@ Patterns are tiered: **value-shaped Tier 1** (provider prefixes like `sk-or-v1-`
 
 > **Gotcha:** do not put `\b` before a secret keyword in the keyword patterns — `_` is a word char, so `\bpassword` fails to match `FOO_PASSWORD` / `SONARR_API_KEY=...`, the most common leak form. Covered by `secretscan_test.go`.
 
-> **Known limitations (`beszel_token` pure-shape):** Because RE2 lacks lookaround assertions, two bare tokens separated by exactly one non-word character consume that delimiter boundary and miss the second token (mitigated by Markdown backtick formatting in real notes). In addition, Go RE2 treats `\w` as ASCII while Python `re` defaults to Unicode word characters, a pre-existing divergence across all rules.
+> **Known limitations (`beszel_token` pure-shape):** Because RE2 lacks lookaround assertions, two bare tokens separated by exactly one non-word character consume that delimiter boundary and miss the second token (mitigated by Markdown backtick formatting in real notes). In addition, Go RE2 treats `\w` as ASCII while Python `re` defaults to Unicode word characters, a pre-existing divergence across all rules. Scanner length checks measure Unicode character count (`utf8.RuneCountInString` in Go, `len()` in Python).
 
 `compile.py` handles ChromaDB embedding only. Wiki generation code was removed; existing wiki data and index reading are preserved.
 

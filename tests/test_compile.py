@@ -588,6 +588,36 @@ class Gate2QuarantineTests(unittest.TestCase):
         self.assertIn("<REDACTED_SECRET>", fm["title"])
         self.assertIn("<REDACTED_SECRET>", fm["tags"])
 
+    def test_secret_assignment_multiword_cases(self):
+        cases = [
+            ("password: hunter2 extra words", "password: <REDACTED_SECRET>"),
+            ("password: abc def", "password: <REDACTED_SECRET>"),
+            ('password: "two words here"', 'password: "<REDACTED_SECRET>"'),
+            ("password: rotated monthly", "password: <REDACTED_SECRET>"),
+            ("PASSWORD=abc123 OTHER_SETTING=value", "PASSWORD=<REDACTED_SECRET>"),
+            ("FOO_PASSWORD=hunter2xyz", "FOO_PASSWORD=<REDACTED_SECRET>"),
+            ("password:\nnext line", "password:\nnext line"),
+            ("password:\r\nnext line", "password:\r\nnext line"),
+            ("password: abc", "password: abc"),
+        ]
+        for inp, want in cases:
+            with self.subTest(inp=inp):
+                out, _ = kb_compile.sanitize_secrets(inp)
+                self.assertEqual(out, want, f"sanitize_secrets({inp!r}) got {out!r}, want {want!r}")
+
+    def test_non_ascii_length_measure_parity(self):
+        # 3 Cyrillic characters (6 bytes UTF-8) -> len() is 3 < min_len 6 -> must stay unredacted
+        under_six = "password: пар"
+        out, hits = kb_compile.sanitize_secrets(under_six)
+        self.assertEqual(out, under_six)
+        self.assertEqual(len(hits), 0)
+
+        # 6 Cyrillic characters (12 bytes UTF-8) -> len() is 6 == min_len 6 -> must be redacted
+        six_chars = "password: пароль"
+        out, hits = kb_compile.sanitize_secrets(six_chars)
+        self.assertEqual(out, "password: <REDACTED_SECRET>")
+        self.assertGreater(len(hits), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

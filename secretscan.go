@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ─── secret scanner (Gate 1: write-time) ────────────────────────────────────
@@ -221,7 +222,7 @@ func (r *SecretRules) Sanitize(content string) (string, []scanHit) {
 				}
 				continue
 			}
-			if len(value) < p.MinLen {
+			if utf8.RuneCountInString(value) < p.MinLen {
 				continue
 			}
 			if p.MinEntropy > 0 && shannonEntropy(value) < p.MinEntropy {
