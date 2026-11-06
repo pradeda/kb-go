@@ -87,7 +87,7 @@ func TestSanitize_Allowlist(t *testing.T) {
 		"the SONARR_API_KEY variable is set elsewhere",
 		"env var API_KEY documented here",
 		"PASSWORD=changeme",
-		"password: your_password_here",
+		"password: example",
 	}
 	for _, in := range cases {
 		t.Run(in, func(t *testing.T) {
@@ -269,6 +269,61 @@ func TestSanitizeWriteRedactsTags(t *testing.T) {
 	}
 }
 
+func TestAllowedExactMatchOnly(t *testing.T) {
+	r := mustRules(t)
+
+	keep := []string{
+		"example",
+		"changeme",
+		"<REDACTED_SECRET>",
+		"   example   ",
+		"CHANGEME",
+		"",
+	}
+	for _, val := range keep {
+		if !r.allowed(val) {
+			t.Errorf("r.allowed(%q) = false, want true (keep)", val)
+		}
+	}
+
+	redact := []string{
+		"your_password_here",
+		"<REDACTED_SECRET> leftover",
+		"hunter2example",
+		"sk-or-v1-abcexample",
+		"notreal123",
+		"correct horse example battery",
+		"managed by example script",
+	}
+	for _, val := range redact {
+		if r.allowed(val) {
+			t.Errorf("r.allowed(%q) = true, want false (redact)", val)
+		}
+	}
+}
+
+func TestRescanRedactedOutputUnchangedForEveryMarker(t *testing.T) {
+	r := mustRules(t)
+	markers := []string{
+		"<REDACTED_SECRET>",
+		"<REDACTED_API_KEY>",
+		"<REDACTED_BESZEL_TOKEN>",
+		"<REDACTED_URL_PASSWORD>",
+		"<REDACTED_BASIC_AUTH>",
+		"<REDACTED_TELEGRAM_TOKEN>",
+	}
+	for _, marker := range markers {
+		input := "password: " + marker
+		out, hits := r.Sanitize(input)
+		if out != input {
+			t.Errorf("re-scanning marker mutated: in=%q out=%q", input, out)
+		}
+		if len(hits) != 0 {
+			t.Errorf("re-scanning marker produced hits: in=%q hits=%+v", input, hits)
+		}
+	}
+}
+
 func TestSecretPatternsParity(t *testing.T) {
 	r := mustRules(t)
 	data, err := os.ReadFile(filepath.Join("tests", "secret_patterns_parity.json"))
@@ -278,13 +333,15 @@ func TestSecretPatternsParity(t *testing.T) {
 	var cases struct {
 		Positives []struct {
 			Name       string `json:"name"`
+			Pattern    string `json:"pattern"`
 			Input      string `json:"input"`
 			WantMarker string `json:"want_marker"`
 			Captured   string `json:"captured"`
 		} `json:"positives"`
 		Negatives []struct {
-			Name  string `json:"name"`
-			Input string `json:"input"`
+			Name    string `json:"name"`
+			Pattern string `json:"pattern"`
+			Input   string `json:"input"`
 		} `json:"negatives"`
 	}
 	if err := json.Unmarshal(data, &cases); err != nil {
@@ -293,24 +350,28 @@ func TestSecretPatternsParity(t *testing.T) {
 
 	for _, tc := range cases.Positives {
 		t.Run(tc.Name, func(t *testing.T) {
+			wantPattern := tc.Pattern
+			if wantPattern == "" {
+				wantPattern = "beszel_token"
+			}
 			out, hits := r.Sanitize(tc.Input)
 			if !strings.Contains(out, tc.WantMarker) {
 				t.Errorf("Sanitize(%q) = %q, want marker %q", tc.Input, out, tc.WantMarker)
 			}
 			found := false
 			for _, h := range hits {
-				if h.Pattern == "beszel_token" {
+				if h.Pattern == wantPattern {
 					found = true
 					break
 				}
 			}
 			if !found {
-				t.Errorf("Sanitize(%q) hits = %+v, want beszel_token", tc.Input, hits)
+				t.Errorf("Sanitize(%q) hits = %+v, want %s", tc.Input, hits, wantPattern)
 			}
 			if tc.Captured != "" {
 				var captured string
 				for _, p := range r.Patterns {
-					if p.Name == "beszel_token" {
+					if p.Name == wantPattern {
 						sub := p.re.FindStringSubmatch(tc.Input)
 						if len(sub) > p.CaptureGroup {
 							captured = sub[p.CaptureGroup]
@@ -327,13 +388,17 @@ func TestSecretPatternsParity(t *testing.T) {
 
 	for _, tc := range cases.Negatives {
 		t.Run(tc.Name, func(t *testing.T) {
+			wantPattern := tc.Pattern
+			if wantPattern == "" {
+				wantPattern = "beszel_token"
+			}
 			out, hits := r.Sanitize(tc.Input)
 			if out != tc.Input {
 				t.Errorf("negative test %q mutated: %q -> %q", tc.Name, tc.Input, out)
 			}
 			for _, h := range hits {
-				if h.Pattern == "beszel_token" {
-					t.Errorf("negative test %q unexpectedly hit beszel_token: %+v", tc.Name, h)
+				if h.Pattern == wantPattern {
+					t.Errorf("negative test %q unexpectedly hit %s: %+v", tc.Name, wantPattern, h)
 				}
 			}
 		})

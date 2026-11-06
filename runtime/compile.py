@@ -847,12 +847,40 @@ def load_secret_rules():
                 f"secret pattern {p['name']!r} capture_group {capture_group} exceeds {p['_re'].groups} groups"
             )
         pats.append(p)
+    allow_set = set()
+    for a in data.get("allowlist", []):
+        clean = _ascii_lower(_ascii_trim(a))
+        if clean:
+            allow_set.add(clean)
+    for a in data.get("allow_contains", []):
+        clean = _ascii_lower(_ascii_trim(a))
+        if clean:
+            allow_set.add(clean)
+    for p in data.get("patterns", []):
+        ph = p.get("placeholder")
+        if ph:
+            clean = _ascii_lower(_ascii_trim(ph))
+            if clean:
+                allow_set.add(clean)
+    for p in data.get("query_redaction_patterns", []):
+        ph = p.get("placeholder")
+        if ph:
+            clean = _ascii_lower(_ascii_trim(ph))
+            if clean:
+                allow_set.add(clean)
     _secret_rules = {
         "patterns": pats,
-        "allow": [a.lower() for a in data.get("allowlist", [])],
-        "allow_sub": [a.lower() for a in data.get("allow_contains", [])],
+        "allow_set": allow_set,
     }
     return _secret_rules
+
+_ASCII_LOWER_TRANS = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+def _ascii_trim(s: str) -> str:
+    return s.strip(" \t\n\r\v\f")
+
+def _ascii_lower(s: str) -> str:
+    return s.translate(_ASCII_LOWER_TRANS)
 
 def _shannon(s):
     if not s:
@@ -866,12 +894,10 @@ def _shannon(s):
     return -sum((c / n) * log2(c / n) for c in freq.values())
 
 def _allowed(rules, value):
-    v = value.strip().lower()
+    v = _ascii_lower(_ascii_trim(value))
     if not v:
         return True
-    if v in rules["allow"]:
-        return True
-    return any(a in v for a in rules["allow_sub"])
+    return v in rules["allow_set"]
 
 def sanitize_secrets(content):
     rules = load_secret_rules()
@@ -886,6 +912,8 @@ def sanitize_secrets(content):
                 continue
             value = content[start:end]
             if _allowed(rules, value):
+                if p.get("action") == "redact":
+                    sys.stderr.write(f"secret scanner: allow-set skipped pattern {p.get('name')}\n")
                 continue
             if len(value) < p.get("min_len", 0):
                 continue

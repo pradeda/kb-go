@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -27,12 +28,12 @@ type SecretPattern struct {
 }
 
 type SecretRules struct {
-	Version      int             `json:"version"`
-	Patterns     []SecretPattern `json:"patterns"`
-	Allowlist    []string        `json:"allowlist"`
-	AllowContain []string        `json:"allow_contains"`
-	allow        []string        // lowercased exact-match literals
-	allowSub     []string        // lowercased substring needles
+	Version                int             `json:"version"`
+	Patterns               []SecretPattern `json:"patterns"`
+	QueryRedactionPatterns []SecretPattern `json:"query_redaction_patterns"`
+	Allowlist              []string        `json:"allowlist"`
+	AllowContain           []string        `json:"allow_contains"`
+	allow                  map[string]struct{}
 }
 
 type scanHit struct {
@@ -105,34 +106,70 @@ func loadSecretRules(path string) (*SecretRules, error) {
 		}
 		r.Patterns[i].re = re
 	}
+	r.allow = make(map[string]struct{})
 	for _, a := range r.Allowlist {
-		r.allow = append(r.allow, strings.ToLower(a))
+		clean := asciiToLower(asciiTrimSpace(a))
+		if clean != "" {
+			r.allow[clean] = struct{}{}
+		}
 	}
 	for _, a := range r.AllowContain {
-		r.allowSub = append(r.allowSub, strings.ToLower(a))
+		clean := asciiToLower(asciiTrimSpace(a))
+		if clean != "" {
+			r.allow[clean] = struct{}{}
+		}
+	}
+	for _, p := range r.Patterns {
+		clean := asciiToLower(asciiTrimSpace(p.Placeholder))
+		if clean != "" {
+			r.allow[clean] = struct{}{}
+		}
+	}
+	for _, p := range r.QueryRedactionPatterns {
+		clean := asciiToLower(asciiTrimSpace(p.Placeholder))
+		if clean != "" {
+			r.allow[clean] = struct{}{}
+		}
 	}
 	return &r, nil
 }
 
-// allowed reports whether a captured value is a known false-positive: an exact
-// (case-insensitive) allowlist literal, or one that contains a placeholder
-// needle (e.g. "your_password", "example", or a "<redacted_" marker).
+func isASCIIWhitespace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\v' || b == '\f'
+}
+
+func asciiTrimSpace(s string) string {
+	start := 0
+	for start < len(s) && isASCIIWhitespace(s[start]) {
+		start++
+	}
+	end := len(s)
+	for end > start && isASCIIWhitespace(s[end-1]) {
+		end--
+	}
+	return s[start:end]
+}
+
+func asciiToLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+// allowed reports whether a captured value matches an exact allowed literal:
+// an entry in allowlist, allow_contains, or a placeholder marker. Comparison is
+// whole-value exact match after trimming ASCII whitespace and lowercasing ASCII.
 func (r *SecretRules) allowed(value string) bool {
-	v := strings.ToLower(strings.TrimSpace(value))
+	v := asciiToLower(asciiTrimSpace(value))
 	if v == "" {
 		return true
 	}
-	for _, a := range r.allow {
-		if v == a {
-			return true
-		}
-	}
-	for _, a := range r.allowSub {
-		if strings.Contains(v, a) {
-			return true
-		}
-	}
-	return false
+	_, ok := r.allow[v]
+	return ok
 }
 
 // shannonEntropy returns bits-per-character Shannon entropy over the bytes of s.
@@ -179,6 +216,9 @@ func (r *SecretRules) Sanitize(content string) (string, []scanHit) {
 			value := content[start:end]
 
 			if r.allowed(value) {
+				if p.Action == "redact" {
+					log.Printf("secret scanner: allow-set skipped pattern %s", p.Name)
+				}
 				continue
 			}
 			if len(value) < p.MinLen {

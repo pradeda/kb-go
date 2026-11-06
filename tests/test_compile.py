@@ -396,18 +396,63 @@ class Gate2QuarantineTests(unittest.TestCase):
         self.assertTrue(parity_file.exists(), f"parity file {parity_file} missing")
         data = json.loads(parity_file.read_text(encoding="utf-8"))
         for tc in data["positives"]:
+            want_pattern = tc.get("pattern", "beszel_token")
             with self.subTest(pos=tc["name"]):
                 cleaned, hits = kb_compile.sanitize_secrets(tc["input"])
                 self.assertIn(tc["want_marker"], cleaned, f"failed for {tc['name']}: {cleaned}")
-                beszel_hits = [h for h in hits if h[0] == "beszel_token"]
-                self.assertTrue(bool(beszel_hits), f"missing hit in {hits}")
+                pattern_hits = [h for h in hits if h[0] == want_pattern]
+                self.assertTrue(bool(pattern_hits), f"missing hit {want_pattern} in {hits}")
                 if "captured" in tc:
-                    self.assertEqual(beszel_hits[0][2], tc["captured"])
+                    self.assertEqual(pattern_hits[0][2], tc["captured"])
         for tc in data["negatives"]:
+            want_pattern = tc.get("pattern", "beszel_token")
             with self.subTest(neg=tc["name"]):
                 cleaned, hits = kb_compile.sanitize_secrets(tc["input"])
                 self.assertEqual(cleaned, tc["input"], f"unexpected modification for {tc['name']}: {cleaned}")
-                self.assertFalse(any(h[0] == "beszel_token" for h in hits), f"unexpected hit in {hits}")
+                self.assertFalse(any(h[0] == want_pattern for h in hits), f"unexpected hit in {hits}")
+
+    def test_allowed_exact_match_only(self):
+        rules = kb_compile.load_secret_rules()
+        keep = [
+            "example",
+            "changeme",
+            "<REDACTED_SECRET>",
+            "   example   ",
+            "CHANGEME",
+            "",
+        ]
+        for val in keep:
+            with self.subTest(keep=val):
+                self.assertTrue(kb_compile._allowed(rules, val), f"_allowed({val!r}) want True")
+
+        redact = [
+            "your_password_here",
+            "<REDACTED_SECRET> leftover",
+            "hunter2example",
+            "sk-or-v1-abcexample",
+            "notreal123",
+            "correct horse example battery",
+            "managed by example script",
+        ]
+        for val in redact:
+            with self.subTest(redact=val):
+                self.assertFalse(kb_compile._allowed(rules, val), f"_allowed({val!r}) want False")
+
+    def test_rescan_redacted_output_unchanged_for_every_marker(self):
+        markers = [
+            "<REDACTED_SECRET>",
+            "<REDACTED_API_KEY>",
+            "<REDACTED_BESZEL_TOKEN>",
+            "<REDACTED_URL_PASSWORD>",
+            "<REDACTED_BASIC_AUTH>",
+            "<REDACTED_TELEGRAM_TOKEN>",
+        ]
+        for marker in markers:
+            with self.subTest(marker=marker):
+                inp = f"password: {marker}"
+                out, hits = kb_compile.sanitize_secrets(inp)
+                self.assertEqual(out, inp, f"re-scanning {marker} mutated")
+                self.assertEqual(len(hits), 0, f"re-scanning {marker} produced hits: {hits}")
 
     def test_tag_only_secret_sanitized_in_db_fts_embed_and_raw(self):
         """Secret present only in tags must be redacted in DB, FTS, embed args, and raw note."""
